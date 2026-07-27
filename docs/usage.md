@@ -9,6 +9,8 @@
 - New applications enforce 80% line coverage. Existing low-coverage applications may temporarily set `enforce_coverage: false` with a documented, expiring exception.
 - Artifacts are built once. Deployment workflows download and promote the existing artifact rather than rebuilding.
 - Environment secrets remain in GitHub Environments. Reusable workflows cannot receive environment secrets through `workflow_call`; the deployment job targets the requested environment directly.
+- A merged `feature-eint1-6-f###` pull request into `release-eqa-*` or `release-epreprod-*` creates the matching `f###` traceability tag on the release-branch merge commit.
+- Feature-ID tags are independent of semantic-version calculation. Re-running feature tagging is idempotent when the existing tag points to the same commit and fails safely if it points elsewhere.
 - Production release creation occurs only after production verification.
 - The automatic release chain validates that production-verification evidence belongs to the deployed main commit before tagging it.
 - Production verification does not target the protected environment a second time; the production deployment is the single approval point.
@@ -19,6 +21,8 @@
 - A push-only branch caller handles `develop-*`, `feature-*`, `release-*`, and
   `hotfix-*` CI/delivery. Keep integration and regression in that same run.
 - A PR-only caller validates branch transitions and release labels.
+- A merged-PR caller creates a feature-ID tag only for
+  `feature-eint1-6-f### → release-eqa-*|release-epreprod-*`.
 - A main-push caller resolves the merged release/hotfix PR, promotes its
   previously built artifact, verifies production, and creates the release.
 - Optional security runs on PR, schedule, or manual dispatch. Set
@@ -35,6 +39,14 @@ Branch CI callers normally need:
 permissions:
   actions: read
   contents: read
+  pull-requests: read
+```
+
+Feature-ID tag callers need:
+
+```yaml
+permissions:
+  contents: write
   pull-requests: read
 ```
 

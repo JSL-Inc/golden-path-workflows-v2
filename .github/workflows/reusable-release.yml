@@ -1,0 +1,164 @@
+name: Reusable Semantic Release v2
+
+on:
+  workflow_call:
+    inputs:
+      release_pr_number:
+        description: Merged pull request to main containing one release label
+        required: true
+        type: number
+      verification_run_id:
+        description: Successful production-verification workflow run
+        required: false
+        type: number
+        default: 0
+      dry_run:
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      version:
+        description: Calculated semantic version
+        value: ${{ jobs.release.outputs.version }}
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Read release classification from merged pull request
+        id: classification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.release_pr_number }}
+        run: |
+          gh pr view "$PR_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json baseRefName,mergedAt,labels > release-pr.json
+          python - <<'PY'
+          import json
+          import os
+
+          with open("release-pr.json", encoding="utf-8") as source:
+              pull_request = json.load(source)
+          if pull_request["baseRefName"] != "main":
+              raise SystemExit("Release PR must target main")
+          if not pull_request["mergedAt"]:
+              raise SystemExit("Release PR must be merged before release")
+          labels = {
+              label["name"] for label in pull_request.get("labels", [])
+          }
+          selected = labels & {"major", "minor", "patch"}
+          if len(selected) != 1:
+              raise SystemExit(
+                  "Release PR must contain exactly one of major, minor, or patch"
+              )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"bump={next(iter(selected))}\n")
+          PY
+      - name: Calculate next semantic version
+        id: version
+        shell: bash
+        env:
+          BUMP: ${{ steps.classification.outputs.bump }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          bump = os.environ["BUMP"]
+          if bump not in {"major", "minor", "patch"}:
+              raise SystemExit("bump must be exactly major, minor, or patch")
+
+          tags = subprocess.run(
+              ["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
+              check=True,
+              text=True,
+              capture_output=True,
+          ).stdout.splitlines()
+          current = tags[0] if tags else "v0.0.0"
+          match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", current)
+          if not match:
+              raise SystemExit(f"Latest version tag is not SemVer: {current}")
+          major, minor, patch = map(int, match.groups())
+          if bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          else:
+              patch += 1
+          version = f"v{major}.{minor}.{patch}"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+          PY
+      - name: Validate verification run input
+        if: inputs.dry_run == false
+        shell: bash
+        run: |
+          if [[ "${{ inputs.verification_run_id }}" == "0" ]]; then
+            echo "::error::A successful production verification run ID is required."
+            exit 1
+          fi
+      - name: Download production verification evidence
+        if: inputs.dry_run == false
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: production-verification-${{ steps.version.outputs.version }}
+          run-id: ${{ inputs.verification_run_id }}
+          github-token: ${{ github.token }}
+          path: verification-evidence
+      - name: Validate production verification evidence
+        if: inputs.dry_run == false
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          with open(
+              "verification-evidence/verification.json", encoding="utf-8"
+          ) as source:
+              evidence = json.load(source)
+          if evidence.get("status") != "passed":
+              raise SystemExit("Production verification evidence did not pass")
+          if evidence.get("release_version") != os.environ["EXPECTED_VERSION"]:
+              raise SystemExit(
+                  "Production verification version does not match the release"
+              )
+          PY
+      - name: Create tag and GitHub Release
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          gh release create "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            --title "$VERSION"
+      - name: Release summary
+        shell: bash
+        run: |
+          {
+            echo "## Semantic release"
+            echo "- Version: ${{ steps.version.outputs.version }}"
+            echo "- Release PR: #${{ inputs.release_pr_number }}"
+            echo "- Bump: ${{ steps.classification.outputs.bump }}"
+            echo "- Verification run: ${{ inputs.verification_run_id }}"
+            echo "- Dry run: ${{ inputs.dry_run }}"
+          } >> "$GITHUB_STEP_SUMMARY"

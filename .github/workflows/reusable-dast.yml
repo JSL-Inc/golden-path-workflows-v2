@@ -1,0 +1,75 @@
+name: Reusable DAST v2
+
+on:
+  workflow_call:
+    inputs:
+      target_url:
+        description: Deployed non-production URL to scan
+        required: true
+        type: string
+      rules_file:
+        required: false
+        type: string
+        default: .zap/rules.tsv
+      blocking:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  dast:
+    name: OWASP ZAP DAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Validate non-production target
+        shell: bash
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+        run: |
+          case "${TARGET_URL,,}" in
+            *prod*|*production*)
+              echo "::error::DAST must not target production by default."
+              exit 1
+              ;;
+          esac
+      - name: Run ZAP baseline scan
+        id: zap
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+          RULES_FILE: ${{ inputs.rules_file }}
+        run: |
+          mkdir -p reports/zap
+          docker run --rm \
+            -v "$PWD:/zap/wrk/:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t "$TARGET_URL" \
+            -c "$RULES_FILE" \
+            -r reports/zap/zap-report.html \
+            -J reports/zap/zap-report.json
+      - name: Upload DAST evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dast-evidence-${{ github.run_id }}
+          path: reports/zap/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Apply blocking policy
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ inputs.blocking }}" == "true" && "${{ steps.zap.outcome }}" != "success" ]]; then
+            echo "::error::Blocking DAST scan reported findings or failed."
+            exit 1
+          fi
+          if [[ "${{ steps.zap.outcome }}" != "success" ]]; then
+            echo "::warning::DAST is advisory for this POC run."
+          fi

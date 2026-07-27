@@ -1,0 +1,68 @@
+name: Reusable Pull Request Policy v2
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  policy:
+    name: Branch and Release Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch flow and release classification
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+
+          base = os.environ["BASE_BRANCH"]
+          head = os.environ["HEAD_BRANCH"]
+          labels = set(json.loads(os.environ.get("LABELS_JSON") or "[]"))
+
+          allowed = (
+              (re.fullmatch(r"develop-[A-Za-z0-9._-]+", head) and
+               re.fullmatch(r"feature-[A-Za-z0-9._-]+", base))
+              or (re.fullmatch(r"feature-[A-Za-z0-9._-]+", head) and
+                  re.fullmatch(r"release-[A-Za-z0-9._-]+", base))
+              or (re.fullmatch(r"release-[A-Za-z0-9._-]+", head) and base == "main")
+              or (re.fullmatch(r"hotfix-[A-Za-z0-9._-]+", head) and base == "main")
+              or (head == "main" and re.fullmatch(r"release-[A-Za-z0-9._-]+", base))
+              or (re.fullmatch(r"release-[A-Za-z0-9._-]+", head) and
+                  re.fullmatch(r"feature-[A-Za-z0-9._-]+", base))
+          )
+          if not allowed:
+              raise SystemExit(
+                  f"Disallowed COUNTRY branch transition: {head} -> {base}"
+              )
+
+          if base == "main":
+              selected = labels & {"major", "minor", "patch"}
+              if len(selected) != 1:
+                  raise SystemExit(
+                      "A PR to main must have exactly one release label: "
+                      "major, minor, or patch"
+                  )
+              print(f"Release classification: {next(iter(selected))}")
+          PY
+
+      - name: Write policy summary
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          {
+            echo "## Pull request policy"
+            echo "- Transition: \`${HEAD_BRANCH} → ${BASE_BRANCH}\`"
+            echo "- Branch flow: valid"
+            echo "- Release label: validated when targeting \`main\`"
+          } >> "$GITHUB_STEP_SUMMARY"

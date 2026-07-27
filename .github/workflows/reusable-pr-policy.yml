@@ -35,6 +35,7 @@ jobs:
                   re.fullmatch(r"release-[A-Za-z0-9._-]+", base))
               or (re.fullmatch(r"release-[A-Za-z0-9._-]+", head) and base == "main")
               or (re.fullmatch(r"hotfix-[A-Za-z0-9._-]+", head) and base == "main")
+              or (head.startswith("dependabot/") and base == "main")
               or (head == "main" and re.fullmatch(r"release-[A-Za-z0-9._-]+", base))
               or (re.fullmatch(r"release-[A-Za-z0-9._-]+", head) and
                   re.fullmatch(r"feature-[A-Za-z0-9._-]+", base))

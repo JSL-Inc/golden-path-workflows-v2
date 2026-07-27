@@ -47,6 +47,9 @@ jobs:
 
           if base == "main":
               selected = labels & {"major", "minor", "patch"}
+              if not selected and head.startswith("dependabot/"):
+                  selected = {"patch"}
+                  print("Dependabot update classified as patch")
               if len(selected) != 1:
                   raise SystemExit(
                       "A PR to main must have exactly one release label: "

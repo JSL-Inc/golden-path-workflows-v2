@@ -45,7 +45,7 @@ jobs:
         run: |
           gh pr view "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
-            --json baseRefName,mergedAt,labels > release-pr.json
+            --json baseRefName,headRefName,mergedAt,labels > release-pr.json
           python - <<'PY'
           import json
           import os
@@ -60,6 +60,8 @@ jobs:
               label["name"] for label in pull_request.get("labels", [])
           }
           selected = labels & {"major", "minor", "patch"}
+          if not selected and pull_request["headRefName"].startswith("dependabot/"):
+              selected = {"patch"}
           if len(selected) != 1:
               raise SystemExit(
                   "Release PR must contain exactly one of major, minor, or patch"

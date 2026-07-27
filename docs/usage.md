@@ -10,7 +10,7 @@
 - Artifacts are built once. Deployment workflows download and promote the existing artifact rather than rebuilding.
 - Environment secrets remain in GitHub Environments. Reusable workflows cannot receive environment secrets through `workflow_call`; the deployment job targets the requested environment directly.
 - Production release creation occurs only after production verification.
-- A live release must supply the workflow-run ID containing matching, successful production-verification evidence.
+- The automatic release chain validates that production-verification evidence belongs to the deployed main commit before tagging it. Manual release runs can still supply a verification workflow-run ID for controlled recovery/testing.
 
 ## Required caller permissions
 

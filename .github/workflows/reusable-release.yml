@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: true
+      release_commit_sha:
+        description: Merged main commit that was deployed and verified
+        required: false
+        type: string
+        default: ""
     outputs:
       version:
         description: Calculated semantic version
@@ -36,6 +41,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_commit_sha || github.sha }}
       - name: Read release classification from merged pull request
         id: classification
         shell: bash
@@ -117,7 +123,7 @@ jobs:
         if: inputs.dry_run == false
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: production-verification-${{ steps.version.outputs.version }}
+          name: production-verification
           run-id: ${{ inputs.verification_run_id }}
           github-token: ${{ github.token }}
           path: verification-evidence
@@ -125,7 +131,7 @@ jobs:
         if: inputs.dry_run == false
         shell: bash
         env:
-          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_COMMIT: ${{ inputs.release_commit_sha || github.sha }}
         run: |
           python - <<'PY'
           import json
@@ -137,9 +143,9 @@ jobs:
               evidence = json.load(source)
           if evidence.get("status") != "passed":
               raise SystemExit("Production verification evidence did not pass")
-          if evidence.get("release_version") != os.environ["EXPECTED_VERSION"]:
+          if evidence.get("commit_sha") != os.environ["EXPECTED_COMMIT"]:
               raise SystemExit(
-                  "Production verification version does not match the release"
+                  "Production verification evidence does not match the release commit"
               )
           PY
       - name: Create tag and GitHub Release

@@ -6,12 +6,12 @@ on:
       release_pr_number:
         description: Merged pull request to main containing one release label
         required: true
-        type: number
+        type: string
       verification_run_id:
         description: Successful production-verification workflow run
         required: false
-        type: number
-        default: 0
+        type: string
+        default: "0"
       dry_run:
         required: false
         type: boolean
@@ -80,6 +80,7 @@ jobs:
         shell: bash
         env:
           BUMP: ${{ steps.classification.outputs.bump }}
+          TARGET_SHA: ${{ inputs.release_commit_sha || github.sha }}
         run: |
           python - <<'PY'
           import os
@@ -87,8 +88,32 @@ jobs:
           import subprocess
 
           bump = os.environ["BUMP"]
+          target_sha = os.environ["TARGET_SHA"]
           if bump not in {"major", "minor", "patch"}:
               raise SystemExit("bump must be exactly major, minor, or patch")
+
+          existing = subprocess.run(
+              ["git", "tag", "--points-at", target_sha, "--list", "v[0-9]*"],
+              check=True,
+              text=True,
+              capture_output=True,
+          ).stdout.splitlines()
+          existing = [
+              tag for tag in existing
+              if re.fullmatch(r"v\d+\.\d+\.\d+", tag)
+          ]
+          if len(existing) > 1:
+              raise SystemExit(
+                  f"Release commit already has multiple SemVer tags: {existing}"
+              )
+          if existing:
+              version = existing[0]
+              with open(
+                  os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8"
+              ) as output:
+                  output.write(f"version={version}\n")
+                  output.write("existing=true\n")
+              raise SystemExit(0)
 
           tags = subprocess.run(
               ["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
@@ -110,6 +135,7 @@ jobs:
           version = f"v{major}.{minor}.{patch}"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={version}\n")
+              output.write("existing=false\n")
           PY
       - name: Validate verification run input
         if: inputs.dry_run == false
@@ -153,12 +179,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          TARGET_SHA: ${{ inputs.release_commit_sha || github.sha }}
         shell: bash
         run: |
-          gh release create "$VERSION" \
-            --target "$GITHUB_SHA" \
-            --generate-notes \
-            --title "$VERSION"
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; no duplicate was created."
+          else
+            gh release create "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$TARGET_SHA" \
+              --generate-notes \
+              --title "$VERSION"
+          fi
       - name: Release summary
         shell: bash
         run: |

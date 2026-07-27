@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: '["python"]'
+      dependency_review_enabled:
+        description: Enable only after the repository dependency graph is available
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,7 +41,7 @@ jobs:
 
   dependency-review:
     name: Dependency Review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && inputs.dependency_review_enabled
     runs-on: ubuntu-latest
     steps:
       - name: Block newly introduced high or critical vulnerabilities

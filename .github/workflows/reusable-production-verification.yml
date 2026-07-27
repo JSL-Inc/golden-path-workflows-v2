@@ -9,6 +9,11 @@ on:
       release_version:
         required: true
         type: string
+      source_sha:
+        description: Commit SHA that was deployed to production
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -18,9 +23,11 @@ jobs:
     name: Production Verification
     runs-on: ubuntu-latest
     environment:
-      name: Production
+      name: prod
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
       - name: Run post-deployment checks
         shell: bash
         run: ${{ inputs.verification_command }}
@@ -28,6 +35,7 @@ jobs:
         shell: bash
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         run: |
           mkdir -p reports/production
           python - <<'PY'
@@ -36,7 +44,7 @@ jobs:
 
           evidence = {
               "release_version": os.environ["RELEASE_VERSION"],
-              "commit_sha": os.environ["GITHUB_SHA"],
+              "commit_sha": os.environ["SOURCE_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "status": "passed",
           }
@@ -49,7 +57,7 @@ jobs:
       - name: Upload production verification evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: production-verification-${{ inputs.release_version }}
+          name: production-verification
           path: reports/production/verification.json
           if-no-files-found: error
           retention-days: 90

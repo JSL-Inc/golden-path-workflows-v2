@@ -1,0 +1,125 @@
+name: Reusable Feature ID Tag v2
+
+on:
+  workflow_call:
+    inputs:
+      feature_branch:
+        description: Merged feature branch in feature-eint1-6-f### format
+        required: true
+        type: string
+      release_branch:
+        description: Target release branch in release-eqa-* or release-epreprod-* format
+        required: true
+        type: string
+      merge_commit_sha:
+        description: Commit created on the release branch by the merged feature pull request
+        required: true
+        type: string
+    outputs:
+      feature_id:
+        description: Rally feature ID extracted from the feature branch
+        value: ${{ jobs.feature-tag.outputs.feature_id }}
+      tag:
+        description: Feature traceability tag
+        value: ${{ jobs.feature-tag.outputs.tag }}
+
+permissions:
+  contents: write
+
+jobs:
+  feature-tag:
+    name: Create feature ID tag
+    runs-on: ubuntu-latest
+    outputs:
+      feature_id: ${{ steps.context.outputs.feature_id }}
+      tag: ${{ steps.context.outputs.tag }}
+    steps:
+      - name: Validate merge context
+        id: context
+        shell: bash
+        env:
+          FEATURE_BRANCH: ${{ inputs.feature_branch }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          MERGE_COMMIT_SHA: ${{ inputs.merge_commit_sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          feature_branch = os.environ["FEATURE_BRANCH"]
+          release_branch = os.environ["RELEASE_BRANCH"]
+          merge_commit_sha = os.environ["MERGE_COMMIT_SHA"]
+
+          feature_match = re.fullmatch(
+              r"feature-eint[1-6]-(f[0-9]+)", feature_branch
+          )
+          if not feature_match:
+              raise SystemExit(
+                  "Feature branch must match feature-eint1-6-f###"
+              )
+          if not re.fullmatch(
+              r"release-(?:eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*",
+              release_branch,
+          ):
+              raise SystemExit(
+                  "Release branch must match release-eqa-* or release-epreprod-*"
+              )
+          if not re.fullmatch(r"[0-9a-fA-F]{40}", merge_commit_sha):
+              raise SystemExit("Merge commit SHA must be a full 40-character SHA")
+
+          feature_id = feature_match.group(1).lower()
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"feature_id={feature_id}\n")
+              output.write(f"tag={feature_id}\n")
+          PY
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_branch }}
+
+      - name: Create feature traceability tag
+        shell: bash
+        env:
+          MERGE_COMMIT_SHA: ${{ inputs.merge_commit_sha }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          TAG: ${{ steps.context.outputs.tag }}
+        run: |
+          git fetch --no-tags origin "$RELEASE_BRANCH"
+
+          if ! git cat-file -e "${MERGE_COMMIT_SHA}^{commit}"; then
+            echo "::error::Merge commit ${MERGE_COMMIT_SHA} is not available."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$MERGE_COMMIT_SHA" "origin/$RELEASE_BRANCH"; then
+            echo "::error::Merge commit is not part of $RELEASE_BRANCH."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            EXISTING_SHA="$(git rev-list -n 1 "$TAG")"
+            if [[ "$EXISTING_SHA" == "$MERGE_COMMIT_SHA" ]]; then
+              echo "Feature tag $TAG already points to this merge commit."
+              exit 0
+            fi
+            echo "::error::Feature tag $TAG already points to $EXISTING_SHA."
+            exit 1
+          fi
+
+          git tag "$TAG" "$MERGE_COMMIT_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Feature tag summary
+        shell: bash
+        run: |
+          {
+            echo "## Feature traceability tag"
+            echo "- Feature branch: \`${{ inputs.feature_branch }}\`"
+            echo "- Release branch: \`${{ inputs.release_branch }}\`"
+            echo "- Feature ID: \`${{ steps.context.outputs.feature_id }}\`"
+            echo "- Tag: \`${{ steps.context.outputs.tag }}\`"
+            echo "- Commit: \`${{ inputs.merge_commit_sha }}\`"
+            echo "- SemVer impact: none"
+          } >> "$GITHUB_STEP_SUMMARY"

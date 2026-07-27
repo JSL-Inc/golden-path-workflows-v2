@@ -30,15 +30,15 @@ jobs:
 
           allowed = (
               (re.fullmatch(r"develop-[A-Za-z0-9._-]+", head) and
-               re.fullmatch(r"feature-[A-Za-z0-9._-]+", base))
-              or (re.fullmatch(r"feature-[A-Za-z0-9._-]+", head) and
-                  re.fullmatch(r"release-[A-Za-z0-9._-]+", base))
+               re.fullmatch(r"feature-eint[1-6]-f[0-9]+", base))
+              or (re.fullmatch(r"feature-eint[1-6]-f[0-9]+", head) and
+                  re.fullmatch(r"release-(?:eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*", base))
               or (re.fullmatch(r"release-[A-Za-z0-9._-]+", head) and base == "main")
               or (re.fullmatch(r"hotfix-[A-Za-z0-9._-]+", head) and base == "main")
               or (head.startswith("dependabot/") and base == "main")
               or (head == "main" and re.fullmatch(r"release-[A-Za-z0-9._-]+", base))
-              or (re.fullmatch(r"release-[A-Za-z0-9._-]+", head) and
-                  re.fullmatch(r"feature-[A-Za-z0-9._-]+", base))
+              or (re.fullmatch(r"release-(?:eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*", head) and
+                  re.fullmatch(r"feature-eint[1-6]-f[0-9]+", base))
           )
           if not allowed:
               raise SystemExit(

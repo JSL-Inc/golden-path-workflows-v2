@@ -18,16 +18,16 @@ on:
     outputs:
       feature_id:
         description: Rally feature ID extracted from the feature branch
-        value: ${{ jobs.feature-tag.outputs.feature_id }}
+        value: ${{ jobs.feature_tag.outputs.feature_id }}
       tag:
         description: Feature traceability tag
-        value: ${{ jobs.feature-tag.outputs.tag }}
+        value: ${{ jobs.feature_tag.outputs.tag }}
 
 permissions:
   contents: write
 
 jobs:
-  feature-tag:
+  feature_tag:
     name: Create feature ID tag
     runs-on: ubuntu-latest
     outputs:
@@ -85,7 +85,7 @@ jobs:
           RELEASE_BRANCH: ${{ inputs.release_branch }}
           TAG: ${{ steps.context.outputs.tag }}
         run: |
-          git fetch --no-tags origin "$RELEASE_BRANCH"
+          git fetch --no-tags origin "+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
 
           if ! git cat-file -e "${MERGE_COMMIT_SHA}^{commit}"; then
             echo "::error::Merge commit ${MERGE_COMMIT_SHA} is not available."

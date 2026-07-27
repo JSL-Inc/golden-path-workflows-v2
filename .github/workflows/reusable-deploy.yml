@@ -16,7 +16,7 @@ on:
       artifact_run_id:
         description: Workflow run that produced the immutable artifact
         required: true
-        type: number
+        type: string
       deploy_command:
         required: true
         type: string

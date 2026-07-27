@@ -8,6 +8,7 @@ Central reusable GitHub Actions workflows for the COUNTRY GitLab-to-GitHub proof
 |---|---|
 | `reusable-ci.yml` | Dependency restore, unit tests, JUnit XML, Cobertura XML, 80% coverage gate, build, lint, and artifact publishing |
 | `reusable-pr-policy.yml` | COUNTRY branch-transition validation and exact semantic-version label validation |
+| `reusable-feature-id-tag.yml` | Idempotent Rally feature-ID tagging after a feature branch is merged into a release branch |
 | `reusable-security.yml` | Optional CodeQL SAST and opt-in dependency review |
 | `reusable-dast.yml` | OWASP ZAP scan against a non-production URL |
 | `reusable-deploy.yml` | Promote an existing build artifact into a protected GitHub Environment |
@@ -23,8 +24,9 @@ uses: JSL-Inc/golden-path-workflows-v2/.github/workflows/reusable-ci.yml@v2
 The `v2` branch is the POC release channel. A production implementation should use immutable release tags or commit SHAs.
 
 Application callers should use one push-only branch workflow for CI, integration,
-regression, and non-production delivery; one PR-only policy workflow; and one
-main-push production-release workflow. This keeps status checks visible without
-running the same CI workload once for `push` and again for `pull_request`.
+regression, and non-production delivery; one PR-only policy workflow; one
+merge-only feature-ID tag workflow; and one main-push production-release
+workflow. This keeps status checks visible without running the same CI workload
+once for `push` and again for `pull_request`.
 
 See [docs/usage.md](docs/usage.md).

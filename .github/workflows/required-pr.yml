@@ -1,0 +1,168 @@
+name: Golden Path Pull Request
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  merge_group:
+  workflow_call:
+    inputs:
+      production_branch:
+        description: Protected production branch; overridden only for an isolated POC
+        required: false
+        type: string
+        default: main
+
+permissions:
+  actions: read
+  contents: read
+  deployments: read
+  pull-requests: read
+  code-quality: write
+
+concurrency:
+  group: required-pr-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  required-pr:
+    name: Required Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout proposed commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Validate branch flow and release classification
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PRODUCTION_BRANCH: ${{ inputs.production_branch || 'main' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+
+          base = os.environ["BASE_BRANCH"]
+          head = os.environ["HEAD_BRANCH"]
+          production = os.environ["PRODUCTION_BRANCH"]
+          labels = set(json.loads(os.environ.get("LABELS_JSON") or "[]"))
+
+          develop = r"develop-[A-Za-z0-9._-]+"
+          feature = r"feature-eint[1-6]-f[0-9]+"
+          prerelease = r"prerelease-(eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*"
+          release = r"release-(eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*"
+          hotfix = r"hotfix-(eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*"
+
+          allowed = (
+              (re.fullmatch(develop, head) and re.fullmatch(feature, base))
+              or (re.fullmatch(feature, head) and
+                  (re.fullmatch(prerelease, base) or re.fullmatch(release, base)))
+              or (re.fullmatch(prerelease, head) and re.fullmatch(release, base))
+              or ((re.fullmatch(release, head) or re.fullmatch(hotfix, head))
+                  and base == production)
+              # Synchronization paths after a release or hotfix.
+              or (head == "main" and re.fullmatch(release, base))
+              or (re.fullmatch(release, head) and re.fullmatch(feature, base))
+          )
+          if not allowed:
+              raise SystemExit(f"Disallowed branch transition: {head} -> {base}")
+
+          if base == production:
+              selected = labels & {"major", "minor", "patch"}
+              if len(selected) != 1:
+                  raise SystemExit(
+                      "A PR to main requires exactly one release label: "
+                      "major, minor, or patch."
+                  )
+          PY
+
+      - name: Run standardized CI
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/ci@simplified-version-1
+
+      - name: Review dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@595b5aeba73380359d98a5e087f648dbb0edce1b # v4.7.3
+        with:
+          fail-on-severity: high
+
+      - name: Run integration and regression validation
+        if: >-
+          github.event_name == 'pull_request' &&
+          (startsWith(github.base_ref, 'prerelease-') ||
+           startsWith(github.base_ref, 'release-'))
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/stage-validation@simplified-version-1
+        with:
+          target_branch: ${{ github.base_ref }}
+
+      - name: Verify EQA or ePreProd promotion before main
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.base_ref == (inputs.production_branch || 'main') &&
+          (startsWith(github.head_ref, 'release-') ||
+           startsWith(github.head_ref, 'hotfix-'))
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["HEAD_SHA"]
+          accepted = []
+
+          for environment in ("eqa", "epreprod"):
+              deployments = json.loads(subprocess.run(
+                  [
+                      "gh", "api",
+                      "--method", "GET",
+                      f"/repos/{repository}/deployments",
+                      "-f", f"sha={sha}",
+                      "-f", f"environment={environment}",
+                  ],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout)
+              for deployment in deployments:
+                  statuses = json.loads(subprocess.run(
+                      [
+                          "gh", "api",
+                          f"/repos/{repository}/deployments/{deployment['id']}/statuses",
+                      ],
+                      check=True,
+                      capture_output=True,
+                      text=True,
+                  ).stdout)
+                  if statuses and statuses[0].get("state") == "success":
+                      accepted.append(environment)
+                      break
+
+          if not accepted:
+              raise SystemExit(
+                  "The release commit must have a successful deployment to "
+                  "either eqa or epreprod before it can merge to main."
+              )
+          print(f"Promotion evidence accepted from: {', '.join(accepted)}")
+          PY
+
+      - name: Pull request summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Required pull request"
+            echo "- Branch policy: ${{ github.event_name == 'pull_request' && 'evaluated' || 'previously evaluated' }}"
+            echo "- Unit tests, build, lint, and evidence: evaluated"
+            echo "- Dependency review: ${{ github.event_name == 'pull_request' && 'evaluated' || 'not applicable' }}"
+            echo "- Native CodeQL, Code Quality, and coverage: enforced by ruleset"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,35 @@
+name: Golden Path Stage Validation
+description: Run application-owned integration and regression validation.
+
+inputs:
+  target_branch:
+    description: Pull request target or pushed branch being validated
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run stage-validation contract
+      shell: bash
+      env:
+        TARGET_BRANCH: ${{ inputs.target_branch }}
+      run: bash .github/golden-path/stage-validate.sh
+
+    - name: Publish stage evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: stage-evidence-${{ github.run_id }}
+        path: reports/stage/**
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Write stage summary
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "## Stage validation"
+          echo "- Target: ${{ inputs.target_branch }}"
+          echo "- Evidence: reports/stage/"
+        } >> "$GITHUB_STEP_SUMMARY"

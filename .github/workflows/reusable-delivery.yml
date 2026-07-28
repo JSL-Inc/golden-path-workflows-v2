@@ -1,0 +1,381 @@
+name: Reusable Golden Path Delivery
+
+on:
+  workflow_call:
+    inputs:
+      branch_context:
+        description: Optional branch used by workflow_dispatch for demonstrations
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        required: false
+        type: string
+        default: application-package
+      production_branch:
+        description: Production branch; overridden only for an isolated POC
+        required: false
+        type: string
+        default: main
+permissions:
+  actions: read
+  contents: write
+  deployments: write
+  pull-requests: read
+  code-quality: write
+
+jobs:
+  plan:
+    name: Delivery plan
+    runs-on: ubuntu-latest
+    outputs:
+      eligible: ${{ steps.route.outputs.eligible }}
+      branch: ${{ steps.route.outputs.branch }}
+      environment: ${{ steps.route.outputs.environment }}
+      run_stage_validation: ${{ steps.route.outputs.run_stage_validation }}
+      production: ${{ steps.route.outputs.production }}
+      artifact_run_id: ${{ steps.route.outputs.artifact_run_id }}
+      release_pr_number: ${{ steps.route.outputs.release_pr_number }}
+      feature_id: ${{ steps.route.outputs.feature_id }}
+      feature_tag_sha: ${{ steps.route.outputs.feature_tag_sha }}
+    steps:
+      - name: Resolve route
+        id: route
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_BRANCH: ${{ inputs.branch_context }}
+          PRODUCTION_BRANCH: ${{ inputs.production_branch }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          event = os.environ["GITHUB_EVENT_NAME"]
+          requested = os.environ.get("REQUESTED_BRANCH", "").strip()
+          branch = requested if event == "workflow_dispatch" and requested else os.environ["GITHUB_REF_NAME"]
+          production_branch = os.environ["PRODUCTION_BRANCH"]
+          environment = ""
+          run_stage = False
+          production = False
+          eligible = True
+          artifact_run_id = os.environ["GITHUB_RUN_ID"]
+          release_pr_number = ""
+          feature_id = ""
+          feature_tag_sha = ""
+
+          if re.fullmatch(r"develop-[A-Za-z0-9._-]+", branch):
+              pass
+          elif match := re.fullmatch(r"feature-eint([1-6])-f[0-9]+", branch):
+              environment = f"eint{match.group(1)}"
+              run_stage = True
+          elif match := re.fullmatch(
+              r"(prerelease|release|hotfix)-(eqa|epreprod)-[A-Za-z0-9][A-Za-z0-9._-]*",
+              branch,
+          ):
+              environment = match.group(2)
+              run_stage = True
+              if event == "push" and match.group(1) in {"prerelease", "release"}:
+                  repository = os.environ["GITHUB_REPOSITORY"]
+                  sha = os.environ["GITHUB_SHA"]
+                  pull_requests = json.loads(subprocess.run(
+                      ["gh", "api", f"/repos/{repository}/commits/{sha}/pulls"],
+                      check=True,
+                      capture_output=True,
+                      text=True,
+                  ).stdout)
+                  merged_features = [
+                      pr for pr in pull_requests
+                      if pr.get("merged_at")
+                      and pr.get("base", {}).get("ref") == branch
+                      and re.fullmatch(
+                          r"feature-eint[1-6]-f[0-9]+",
+                          pr.get("head", {}).get("ref", ""),
+                      )
+                  ]
+                  if merged_features:
+                      feature_branch = max(
+                          merged_features,
+                          key=lambda pr: pr["merged_at"],
+                      )["head"]["ref"]
+                      feature_id = re.search(
+                          r"(f[0-9]+)$", feature_branch
+                      ).group(1)
+                      feature_tag_sha = sha
+          elif branch.startswith("dependabot/"):
+              pass
+          elif branch == production_branch:
+              production = True
+              environment = "prod"
+              repository = os.environ["GITHUB_REPOSITORY"]
+              sha = os.environ["GITHUB_SHA"]
+              pull_requests = json.loads(subprocess.run(
+                  ["gh", "api", f"/repos/{repository}/commits/{sha}/pulls"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout)
+              matches = [
+                  pr for pr in pull_requests
+                  if pr.get("merged_at")
+                  and pr.get("base", {}).get("ref") == production_branch
+                  and pr.get("head", {}).get("ref", "").startswith(
+                      ("release-", "hotfix-")
+                  )
+              ]
+              if len(matches) != 1:
+                  eligible = False
+                  environment = ""
+              else:
+                  pull_request = matches[0]
+                  release_pr_number = str(pull_request["number"])
+                  source_branch = pull_request["head"]["ref"]
+                  source_sha = pull_request["head"]["sha"]
+                  runs = json.loads(subprocess.run(
+                      [
+                          "gh", "api",
+                          "--method", "GET",
+                          f"/repos/{repository}/actions/workflows/delivery.yml/runs",
+                          "-f", f"head_sha={source_sha}",
+                          "-f", "event=push",
+                          "-f", "status=success",
+                          "-f", "per_page=25",
+                      ],
+                      check=True,
+                      capture_output=True,
+                      text=True,
+                  ).stdout).get("workflow_runs", [])
+                  candidates = [
+                      run for run in runs
+                      if run.get("head_branch") == source_branch
+                  ]
+                  if not candidates:
+                      raise SystemExit(
+                          f"No successful delivery artifact exists for {source_branch}."
+                      )
+                  artifact_run_id = str(max(
+                      candidates, key=lambda run: run["run_number"]
+                  )["id"])
+          else:
+              raise SystemExit(f"Unsupported Golden Path branch: {branch}")
+
+          values = {
+              "eligible": str(eligible).lower(),
+              "branch": branch,
+              "environment": environment,
+              "run_stage_validation": str(run_stage).lower(),
+              "production": str(production).lower(),
+              "artifact_run_id": artifact_run_id,
+              "release_pr_number": release_pr_number,
+              "feature_id": feature_id,
+              "feature_tag_sha": feature_tag_sha,
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PY
+
+      - name: Publish plan
+        shell: bash
+        run: |
+          {
+            echo "## Delivery plan"
+            echo "- Branch: ${{ steps.route.outputs.branch }}"
+            echo "- Environment: ${{ steps.route.outputs.environment || 'none' }}"
+            echo "- Stage validation: ${{ steps.route.outputs.run_stage_validation }}"
+            echo "- Production release: ${{ steps.route.outputs.production }}"
+            echo "- Feature tag: ${{ steps.route.outputs.feature_id || 'none' }}"
+            echo "- Eligible: ${{ steps.route.outputs.eligible }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  feature-traceability:
+    name: Feature traceability
+    needs: plan
+    if: needs.plan.outputs.feature_id != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Create immutable Rally feature tag
+        shell: bash
+        env:
+          FEATURE_ID: ${{ needs.plan.outputs.feature_id }}
+          TAG_SHA: ${{ needs.plan.outputs.feature_tag_sha }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$FEATURE_ID" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$FEATURE_ID:refs/tags/$FEATURE_ID"
+            test "$(git rev-list -n 1 "$FEATURE_ID")" = "$TAG_SHA" || {
+              echo "::error::Tag $FEATURE_ID already points to another commit."
+              exit 1
+            }
+            echo "Tag $FEATURE_ID already records this feature merge."
+          else
+            git tag "$FEATURE_ID" "$TAG_SHA"
+            git push origin "refs/tags/$FEATURE_ID"
+          fi
+
+  build:
+    name: Build and validate
+    needs: plan
+    if: >-
+      needs.plan.outputs.eligible == 'true' &&
+      needs.plan.outputs.production != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Run standardized CI
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/ci@simplified-version-1
+        with:
+          artifact_name: ${{ inputs.artifact_name }}
+      - name: Run stage validation
+        if: needs.plan.outputs.run_stage_validation == 'true'
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/stage-validation@simplified-version-1
+        with:
+          target_branch: ${{ needs.plan.outputs.branch }}
+
+  deploy:
+    name: Deploy ${{ needs.plan.outputs.environment }}
+    needs: [plan, build]
+    if: >-
+      always() &&
+      needs.plan.outputs.eligible == 'true' &&
+      needs.plan.outputs.environment != '' &&
+      (needs.build.result == 'success' ||
+       needs.plan.outputs.production == 'true')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.plan.outputs.environment }}
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ needs.plan.outputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download immutable build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ needs.plan.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: promoted-artifact
+
+      - name: Download promoted CI evidence
+        if: needs.plan.outputs.production == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: test-evidence-${{ needs.plan.outputs.artifact_run_id }}
+          run-id: ${{ needs.plan.outputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+          path: promoted-evidence
+
+      - name: Establish the main-branch coverage baseline
+        if: needs.plan.outputs.production == 'true'
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: promoted-evidence/coverage/cobertura.xml
+          language: Python
+          label: golden-path
+
+      - name: Deploy
+        shell: bash
+        env:
+          ARTIFACT_DIRECTORY: promoted-artifact
+        run: bash .github/golden-path/deploy.sh
+
+      - name: Smoke test
+        shell: bash
+        run: bash .github/golden-path/smoke-test.sh
+
+      - name: Verify production
+        if: needs.plan.outputs.production == 'true'
+        shell: bash
+        run: bash .github/golden-path/production-verify.sh
+
+      - name: Publish production verification evidence
+        if: needs.plan.outputs.production == 'true' && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-verification-${{ github.sha }}
+          path: reports/production/**
+          if-no-files-found: error
+
+      - name: Create semantic tag and GitHub Release
+        if: needs.plan.outputs.production == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR: ${{ needs.plan.outputs.release_pr_number }}
+          ARTIFACT_RUN_ID: ${{ needs.plan.outputs.artifact_run_id }}
+        run: |
+          git fetch --tags --force
+          gh pr view "$RELEASE_PR" --json labels,headRefName > release-pr.json
+
+          BUMP="$(python - <<'PY'
+          import json
+          with open("release-pr.json", encoding="utf-8") as source:
+              pull_request = json.load(source)
+          labels = {item["name"] for item in pull_request.get("labels", [])}
+          selected = labels & {"major", "minor", "patch"}
+          if len(selected) != 1:
+              raise SystemExit("Merged release PR must have one SemVer label.")
+          print(next(iter(selected)))
+          PY
+          )"
+
+          VERSION="$(BUMP="$BUMP" python - <<'PY'
+          import os
+          import re
+          import subprocess
+
+          tags = subprocess.run(
+              ["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          current = tags[0] if tags else "v0.0.0"
+          match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", current)
+          if not match:
+              raise SystemExit(f"Invalid latest SemVer tag: {current}")
+          major, minor, patch = map(int, match.groups())
+          if os.environ["BUMP"] == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif os.environ["BUMP"] == "minor":
+              minor, patch = minor + 1, 0
+          else:
+              patch += 1
+          print(f"v{major}.{minor}.{patch}")
+          PY
+          )"
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists."
+            exit 0
+          fi
+
+          {
+            echo "Promoted artifact from:"
+            echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID"
+          } > release-notes.md
+
+          gh release create "$VERSION" promoted-artifact/* \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes-file release-notes.md
+
+      - name: Publish deployment summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Delivery"
+            echo "- Environment: ${{ needs.plan.outputs.environment }}"
+            echo "- Artifact run: ${{ needs.plan.outputs.artifact_run_id }}"
+            echo "- Production finalization: ${{ needs.plan.outputs.production }}"
+          } >> "$GITHUB_STEP_SUMMARY"

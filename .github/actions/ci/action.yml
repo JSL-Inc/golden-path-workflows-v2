@@ -1,0 +1,80 @@
+name: Golden Path CI
+description: Run the repository CI adapter and publish standardized evidence.
+
+inputs:
+  coverage_language:
+    description: Language label sent to GitHub Code Quality
+    required: false
+    default: Python
+  artifact_name:
+    description: Immutable application artifact name
+    required: false
+    default: application-package
+
+runs:
+  using: composite
+  steps:
+    - name: Run application CI contract
+      shell: bash
+      run: bash .github/golden-path/ci.sh
+
+    - name: Validate standardized evidence
+      shell: bash
+      run: |
+        test -s reports/junit/results.xml || {
+          echo "::error::Missing JUnit XML: reports/junit/results.xml"
+          exit 1
+        }
+        test -s reports/coverage/cobertura.xml || {
+          echo "::error::Missing Cobertura XML: reports/coverage/cobertura.xml"
+          exit 1
+        }
+        test -n "$(find dist -type f -print -quit 2>/dev/null)" || {
+          echo "::error::The CI adapter did not create a build artifact in dist/."
+          exit 1
+        }
+
+    - name: Upload coverage to GitHub Code Quality
+      if: >-
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'push' &&
+         github.ref_name == github.event.repository.default_branch)
+      uses: actions/upload-code-coverage@v1
+      with:
+        file: reports/coverage/cobertura.xml
+        language: ${{ inputs.coverage_language }}
+        label: golden-path
+
+    - name: Publish test evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: test-evidence-${{ github.run_id }}
+        path: |
+          reports/junit/results.xml
+          reports/coverage/cobertura.xml
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Publish immutable build
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: dist/**
+        if-no-files-found: error
+        retention-days: 30
+
+    - name: Write CI summary
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "## Golden Path CI"
+          echo
+          echo "- Application CI contract: complete"
+          echo "- JUnit XML: reports/junit/results.xml"
+          echo "- Cobertura XML: reports/coverage/cobertura.xml"
+          echo "- Coverage policy: enforced by the GitHub ruleset"
+          echo "- Build artifact: ${{ inputs.artifact_name }}"
+        } >> "$GITHUB_STEP_SUMMARY"

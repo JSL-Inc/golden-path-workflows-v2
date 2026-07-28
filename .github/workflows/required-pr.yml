@@ -2,7 +2,7 @@ name: Golden Path Pull Request
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   workflow_call:
     inputs:
@@ -34,24 +34,21 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Validate branch flow and release classification
+      - name: Validate branch flow
         if: github.event_name == 'pull_request'
         shell: bash
         env:
           BASE_BRANCH: ${{ github.base_ref }}
           HEAD_BRANCH: ${{ github.head_ref }}
-          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PRODUCTION_BRANCH: ${{ inputs.production_branch || 'main' }}
         run: |
           python - <<'PY'
-          import json
           import os
           import re
 
           base = os.environ["BASE_BRANCH"]
           head = os.environ["HEAD_BRANCH"]
           production = os.environ["PRODUCTION_BRANCH"]
-          labels = set(json.loads(os.environ.get("LABELS_JSON") or "[]"))
 
           develop = r"develop-[A-Za-z0-9._-]+"
           feature = r"feature-eint[1-6]-f[0-9]+"
@@ -72,18 +69,10 @@ jobs:
           )
           if not allowed:
               raise SystemExit(f"Disallowed branch transition: {head} -> {base}")
-
-          if base == production:
-              selected = labels & {"major", "minor", "patch"}
-              if len(selected) != 1:
-                  raise SystemExit(
-                      "A PR to main requires exactly one release label: "
-                      "major, minor, or patch."
-                  )
           PY
 
       - name: Run standardized CI
-        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/ci@simplified-version-1
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/ci@simplified-version-2
 
       - name: Review dependency changes
         if: github.event_name == 'pull_request'
@@ -96,7 +85,7 @@ jobs:
           github.event_name == 'pull_request' &&
           (startsWith(github.base_ref, 'prerelease-') ||
            startsWith(github.base_ref, 'release-'))
-        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/stage-validation@simplified-version-1
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/stage-validation@simplified-version-2
         with:
           target_branch: ${{ github.base_ref }}
 

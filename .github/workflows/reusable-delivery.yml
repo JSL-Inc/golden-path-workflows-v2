@@ -35,7 +35,6 @@ jobs:
       run_stage_validation: ${{ steps.route.outputs.run_stage_validation }}
       production: ${{ steps.route.outputs.production }}
       artifact_run_id: ${{ steps.route.outputs.artifact_run_id }}
-      release_pr_number: ${{ steps.route.outputs.release_pr_number }}
       feature_id: ${{ steps.route.outputs.feature_id }}
       feature_tag_sha: ${{ steps.route.outputs.feature_tag_sha }}
     steps:
@@ -62,7 +61,6 @@ jobs:
           production = False
           eligible = True
           artifact_run_id = os.environ["GITHUB_RUN_ID"]
-          release_pr_number = ""
           feature_id = ""
           feature_tag_sha = ""
 
@@ -130,7 +128,6 @@ jobs:
                   environment = ""
               else:
                   pull_request = matches[0]
-                  release_pr_number = str(pull_request["number"])
                   source_branch = pull_request["head"]["ref"]
                   source_sha = pull_request["head"]["sha"]
                   runs = json.loads(subprocess.run(
@@ -168,7 +165,6 @@ jobs:
               "run_stage_validation": str(run_stage).lower(),
               "production": str(production).lower(),
               "artifact_run_id": artifact_run_id,
-              "release_pr_number": release_pr_number,
               "feature_id": feature_id,
               "feature_tag_sha": feature_tag_sha,
           }
@@ -230,12 +226,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run standardized CI
-        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/ci@simplified-version-1
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/ci@simplified-version-2
         with:
           artifact_name: ${{ inputs.artifact_name }}
       - name: Run stage validation
         if: needs.plan.outputs.run_stage_validation == 'true'
-        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/stage-validation@simplified-version-1
+        uses: JSL-Inc/golden-path-workflows-v2/.github/actions/stage-validation@simplified-version-2
         with:
           target_branch: ${{ needs.plan.outputs.branch }}
 
@@ -305,54 +301,17 @@ jobs:
           path: reports/production/**
           if-no-files-found: error
 
-      - name: Create semantic tag and GitHub Release
+      - name: Create POC tag and GitHub Release
         if: needs.plan.outputs.production == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_PR: ${{ needs.plan.outputs.release_pr_number }}
           ARTIFACT_RUN_ID: ${{ needs.plan.outputs.artifact_run_id }}
         run: |
-          git fetch --tags --force
-          gh pr view "$RELEASE_PR" --json labels,headRefName > release-pr.json
-
-          BUMP="$(python - <<'PY'
-          import json
-          with open("release-pr.json", encoding="utf-8") as source:
-              pull_request = json.load(source)
-          labels = {item["name"] for item in pull_request.get("labels", [])}
-          selected = labels & {"major", "minor", "patch"}
-          if len(selected) != 1:
-              raise SystemExit("Merged release PR must have one SemVer label.")
-          print(next(iter(selected)))
-          PY
-          )"
-
-          VERSION="$(BUMP="$BUMP" python - <<'PY'
-          import os
-          import re
-          import subprocess
-
-          tags = subprocess.run(
-              ["git", "tag", "--list", "v[0-9]*", "--sort=-v:refname"],
-              check=True,
-              capture_output=True,
-              text=True,
-          ).stdout.splitlines()
-          current = tags[0] if tags else "v0.0.0"
-          match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", current)
-          if not match:
-              raise SystemExit(f"Invalid latest SemVer tag: {current}")
-          major, minor, patch = map(int, match.groups())
-          if os.environ["BUMP"] == "major":
-              major, minor, patch = major + 1, 0, 0
-          elif os.environ["BUMP"] == "minor":
-              minor, patch = minor + 1, 0
-          else:
-              patch += 1
-          print(f"v{major}.{minor}.{patch}")
-          PY
-          )"
+          # POC policy: every successful production delivery is a patch-style
+          # release. The workflow run number is unique, automatic, and makes the
+          # release easy to trace without labels or a version file.
+          VERSION="v0.0.${GITHUB_RUN_NUMBER}"
 
           if gh release view "$VERSION" >/dev/null 2>&1; then
             echo "Release $VERSION already exists."
@@ -360,6 +319,8 @@ jobs:
           fi
 
           {
+            echo "POC release $VERSION"
+            echo
             echo "Promoted artifact from:"
             echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID"
           } > release-notes.md

@@ -8,7 +8,9 @@
    validation.
 4. Merge the PR; GitHub creates immutable tag `f26`, then the release branch is
    built and deployed to the environment named in the branch.
-5. Open the release PR to `main`; the required workflow verifies the existing
-   successful EQA or ePreProd deployment instead of redeploying it.
-6. Merge to `main`; the approved artifact is promoted to `prod`, smoke tested,
-   production verified, semantically tagged, and published as a GitHub Release.
+5. Open the release PR to the configured production branch; the required
+   workflow verifies the existing successful EQA or ePreProd deployment instead
+   of redeploying it.
+6. Merge; the approved artifact is promoted to `prod`, smoke tested, production
+   verified, tagged as `v0.0.<delivery-run-number>`, and published as a GitHub
+   Release. No release label is required.

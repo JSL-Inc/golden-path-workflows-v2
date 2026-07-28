@@ -17,6 +17,8 @@ Organization rulesets enforce code-scanning, quality, and coverage results.
   to branch naming, records feature tags, and completes production releases.
   The production run also republishes the promoted Cobertura evidence against
   `main`, establishing the native coverage baseline without rebuilding.
+  POC releases use `v0.0.<delivery-run-number>` so versioning requires no
+  release label, PR lookup, or version file.
 - `reusable-dast.yml` provides optional non-production DAST.
 
 ## Repository contract

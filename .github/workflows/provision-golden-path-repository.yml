@@ -202,11 +202,26 @@ jobs:
           }' | gh api --method PATCH \
             "repos/$ORG/$REPO/properties/values" --input - >/dev/null
 
-      - name: Enable dependency security
+      - name: Attach code-security configuration
         shell: bash
         run: |
-          gh api --method PUT "repos/$ORG/$REPO/vulnerability-alerts" >/dev/null
-          gh api --method PUT "repos/$ORG/$REPO/automated-security-fixes" >/dev/null
+          configuration_id="$(gh api \
+            "orgs/$ORG/code-security/configurations?target_type=all" \
+            --jq '.[] | select(.name == "Golden Path Security Baseline") | .id' |
+            head -n 1)"
+          repository_id="$(gh api "repos/$ORG/$REPO" --jq .id)"
+
+          if [[ -z "$configuration_id" ]]; then
+            echo "::error::Run Apply Golden Path Governance before provisioning repositories."
+            exit 1
+          fi
+
+          jq -n --argjson repository_id "$repository_id" '{
+            scope: "selected",
+            selected_repository_ids: [$repository_id]
+          }' | gh api --method POST \
+            "orgs/$ORG/code-security/configurations/$configuration_id/attach" \
+            --input - >/dev/null
 
       - name: Summary
         shell: bash
@@ -218,5 +233,6 @@ jobs:
             echo "- Environments: eint1-eint6, eqa, epreprod, prod"
             echo "- Labels: release, maintenance, and exception labels"
             echo "- Organization rulesets: selected by golden_path=enabled"
+            echo "- Security: Golden Path Security Baseline attached"
             echo "- Reviewer teams: configured when IDs were supplied"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -39,9 +39,8 @@ into every repository.
 2. Run **Apply Golden Path Governance** once. It creates the custom properties,
    reconciles the organization rulesets, and marks the source repository as a
    template.
-3. Create and apply one organization code-security configuration with:
-   CodeQL default setup, dependency graph, Dependabot alerts and security
-   updates, secret scanning, and push protection.
+3. The workflow also creates or updates **Golden Path Security Baseline**.
+   Provisioning attaches that configuration only to enrolled repositories.
 4. Start the rulesets in Evaluate mode where available, confirm the check names,
    then activate them.
 
@@ -55,7 +54,7 @@ Run **Provision Golden Path Repository**. The workflow creates or reconciles:
 - `eint1`-`eint6`, `eqa`, `epreprod`, and `prod` environments;
 - deployment branch policies for each environment;
 - `golden_path` and `release_path` custom properties; and
-- vulnerability alerts and Dependabot security updates.
+- the organization code-security configuration.
 
 Supply the numeric shared-stage and production reviewer team IDs to the
 provisioning workflow to configure approvals automatically. Leaving an ID

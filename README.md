@@ -7,6 +7,7 @@ This repository is the Golden Path control plane.
 | `.github/workflows/provision-golden-path-repository.yml` | Create and configure application repositories |
 | `.github/workflows/apply-golden-path-governance.yml` | Reconcile organization properties and rulesets |
 | `governance/org-rulesets/` | Reviewable organization policy |
+| `governance/code-security/` | CodeQL, dependency, and secret-protection baseline |
 | `governance/repository-rulesets/` | Optional stricter repository overlay example |
 
 The application template intentionally uses local, readable YAML workflows.

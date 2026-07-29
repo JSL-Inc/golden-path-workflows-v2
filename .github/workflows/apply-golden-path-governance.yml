@@ -43,6 +43,24 @@ jobs:
             -f 'allowed_values[]=eqa-epreprod' \
             -f values_editable_by=org_actors >/dev/null
 
+      - name: Create or update code-security configuration
+        shell: bash
+        run: |
+          name="$(jq -r .name governance/code-security/golden-path.json)"
+          id="$(gh api "orgs/$ORG/code-security/configurations?target_type=all" \
+            --jq ".[] | select(.name == \"$name\") | .id" | head -n 1)"
+
+          if [[ -n "$id" ]]; then
+            gh api --method PATCH \
+              "orgs/$ORG/code-security/configurations/$id" \
+              --input governance/code-security/golden-path.json >/dev/null
+            echo "Updated $name"
+          else
+            gh api --method POST "orgs/$ORG/code-security/configurations" \
+              --input governance/code-security/golden-path.json >/dev/null
+            echo "Created $name"
+          fi
+
       - name: Create or update organization rulesets
         shell: bash
         run: |
@@ -73,6 +91,7 @@ jobs:
           {
             echo "## Golden Path organization governance applied"
             echo "- Custom properties are available"
+            echo "- Code-security configuration was reconciled"
             echo "- Organization rulesets were reconciled"
             echo "- golden-path-template-v2 is marked as a template"
           } >> "$GITHUB_STEP_SUMMARY"

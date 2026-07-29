@@ -41,8 +41,8 @@ into every repository.
    template.
 3. The workflow also creates or updates **Golden Path Security Baseline**.
    Provisioning attaches that configuration only to enrolled repositories.
-4. Start the rulesets in Evaluate mode where available, confirm the check names,
-   then activate them.
+4. Confirm the required check names in the sandbox before running the workflow.
+   The committed POC rulesets use active enforcement.
 
 ## Per-repository setup
 

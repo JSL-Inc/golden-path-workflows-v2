@@ -1,5 +1,18 @@
 # Golden Path Workflows v2
 
+This repository is the Golden Path control plane.
+
+- `.github/workflows/provision-golden-path-repository.yml` creates and
+  configures application repositories.
+- `.github/workflows/apply-golden-path-governance.yml` reconciles organization
+  properties and rulesets.
+- `governance/` contains the reviewable organization policy specifications.
+- The existing reusable workflows remain available for teams that choose that
+  model, but the POC template uses understandable local YAML workflows and does
+  not depend on callers.
+
+See [governance/README.md](governance/README.md) for the organization rollout.
+
 Central reusable GitHub Actions workflows for the COUNTRY GitLab-to-GitHub proof of concept.
 
 ## Workflows

@@ -1,0 +1,222 @@
+name: Provision Golden Path Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_name:
+        description: New repository name
+        required: true
+        type: string
+      description:
+        description: Repository description
+        required: false
+        default: Golden Path application
+        type: string
+      private:
+        description: Create a private repository
+        required: true
+        default: true
+        type: boolean
+      release_path:
+        description: Release promotion path
+        required: true
+        default: eqa-epreprod
+        type: choice
+        options:
+          - eqa-epreprod
+          - eqa-only
+      shared_reviewer_team_id:
+        description: Optional numeric team ID for EQA/ePreProd approvals
+        required: false
+        type: string
+      production_reviewer_team_id:
+        description: Optional numeric team ID for production approval
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: Create and Configure Repository
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GOLDEN_PATH_ADMIN_TOKEN }}
+      ORG: JSL-Inc
+      TEMPLATE_REPO: golden-path-template-v2
+      REPO: ${{ inputs.repository_name }}
+      DESCRIPTION: ${{ inputs.description }}
+      PRIVATE: ${{ inputs.private }}
+      RELEASE_PATH: ${{ inputs.release_path }}
+      SHARED_REVIEWER_TEAM_ID: ${{ inputs.shared_reviewer_team_id }}
+      PRODUCTION_REVIEWER_TEAM_ID: ${{ inputs.production_reviewer_team_id }}
+    steps:
+      - name: Validate request
+        shell: bash
+        run: |
+          if [[ ! "$REPO" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Repository names may contain letters, numbers, dots, underscores, and hyphens."
+            exit 1
+          fi
+
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Configure the GOLDEN_PATH_ADMIN_TOKEN organization secret."
+            exit 1
+          fi
+
+      - name: Create repository from the template
+        shell: bash
+        run: |
+          if gh api "repos/$ORG/$REPO" >/dev/null 2>&1; then
+            echo "$ORG/$REPO already exists; configuration will be reconciled."
+          else
+            gh api --method POST "repos/$ORG/$TEMPLATE_REPO/generate" \
+              -f owner="$ORG" \
+              -f name="$REPO" \
+              -f description="$DESCRIPTION" \
+              -F private="$PRIVATE" \
+              -F include_all_branches=false >/dev/null
+          fi
+
+      - name: Configure repository defaults
+        shell: bash
+        run: |
+          gh api --method PATCH "repos/$ORG/$REPO" \
+            -F has_issues=true \
+            -F has_projects=false \
+            -F has_wiki=false \
+            -F allow_squash_merge=true \
+            -F allow_merge_commit=false \
+            -F allow_rebase_merge=false \
+            -F allow_auto_merge=true \
+            -F delete_branch_on_merge=true >/dev/null
+
+          gh api --method PUT "repos/$ORG/$REPO/actions/permissions/workflow" \
+            -f default_workflow_permissions=read \
+            -F can_approve_pull_request_reviews=false >/dev/null
+
+      - name: Create release labels
+        shell: bash
+        env:
+          GH_REPO: ${{ env.ORG }}/${{ env.REPO }}
+        run: |
+          gh label create major --color b60205 \
+            --description "Breaking release: increment MAJOR" --force
+          gh label create minor --color 0e8a16 \
+            --description "Feature release: increment MINOR" --force
+          gh label create patch --color 1d76db \
+            --description "Fix release: increment PATCH" --force
+          gh label create dependencies --color 0366d6 \
+            --description "Dependency maintenance" --force
+          gh label create hotfix --color d93f0b \
+            --description "Expedited production correction" --force
+          gh label create coverage-transition --color fbca04 \
+            --description "Approved temporary coverage transition" --force
+          gh label create security-exception --color e99695 \
+            --description "Approved security exception evidence" --force
+
+      - name: Create deployment environments
+        shell: bash
+        run: |
+          create_environment() {
+            local environment="$1"
+            local team_id="${2:-}"
+
+            if [[ -n "$team_id" && ! "$team_id" =~ ^[0-9]+$ ]]; then
+              echo "::error::Reviewer team IDs must be numeric."
+              exit 1
+            fi
+
+            if [[ -n "$team_id" ]]; then
+              jq -n --argjson team_id "$team_id" '{
+                wait_timer: 0,
+                prevent_self_review: true,
+                reviewers: [{type: "Team", id: $team_id}],
+                deployment_branch_policy: {
+                  protected_branches: false,
+                  custom_branch_policies: true
+                }
+              }'
+            else
+              jq -n '{
+                wait_timer: 0,
+                prevent_self_review: false,
+                deployment_branch_policy: {
+                  protected_branches: false,
+                  custom_branch_policies: true
+                }
+              }'
+            fi | gh api --method PUT \
+              "repos/$ORG/$REPO/environments/$environment" --input - >/dev/null
+          }
+
+          for environment in eint1 eint2 eint3 eint4 eint5 eint6; do
+            create_environment "$environment"
+          done
+
+          create_environment eqa "$SHARED_REVIEWER_TEAM_ID"
+          create_environment epreprod "$SHARED_REVIEWER_TEAM_ID"
+          create_environment prod "$PRODUCTION_REVIEWER_TEAM_ID"
+
+      - name: Configure deployment branch policies
+        shell: bash
+        run: |
+          add_policy() {
+            local environment="$1"
+            local pattern="$2"
+            local current
+
+            current="$(gh api \
+              "repos/$ORG/$REPO/environments/$environment/deployment-branch-policies" \
+              --jq '.branch_policies[].name')"
+
+            if ! grep -Fxq "$pattern" <<< "$current"; then
+              gh api --method POST \
+                "repos/$ORG/$REPO/environments/$environment/deployment-branch-policies" \
+                -f name="$pattern" \
+                -f type=branch >/dev/null
+            fi
+          }
+
+          for number in 1 2 3 4 5 6; do
+            add_policy "eint$number" "feature-eint$number-*"
+          done
+
+          add_policy eqa "release-eqa-*"
+          add_policy eqa "hotfix-eqa-*"
+          add_policy eqa "release-epreprod-*"
+          add_policy eqa "hotfix-epreprod-*"
+          add_policy epreprod "release-epreprod-*"
+          add_policy epreprod "hotfix-epreprod-*"
+          add_policy prod main
+
+      - name: Opt into organization governance
+        shell: bash
+        run: |
+          jq -n --arg release_path "$RELEASE_PATH" '{
+            properties: [
+              {property_name: "golden_path", value: "enabled"},
+              {property_name: "release_path", value: $release_path}
+            ]
+          }' | gh api --method PATCH \
+            "repos/$ORG/$REPO/properties/values" --input - >/dev/null
+
+      - name: Enable dependency security
+        shell: bash
+        run: |
+          gh api --method PUT "repos/$ORG/$REPO/vulnerability-alerts" >/dev/null
+          gh api --method PUT "repos/$ORG/$REPO/automated-security-fixes" >/dev/null
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## $ORG/$REPO provisioned"
+            echo "- Source: $ORG/$TEMPLATE_REPO"
+            echo "- Release path: $RELEASE_PATH"
+            echo "- Environments: eint1-eint6, eqa, epreprod, prod"
+            echo "- Labels: release, maintenance, and exception labels"
+            echo "- Organization rulesets: selected by golden_path=enabled"
+            echo "- Reviewer teams: configured when IDs were supplied"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,78 @@
+name: Apply Golden Path Governance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: Apply Organization Rulesets
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GOLDEN_PATH_ADMIN_TOKEN }}
+      ORG: JSL-Inc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate administrator token
+        shell: bash
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Configure the GOLDEN_PATH_ADMIN_TOKEN organization secret."
+            exit 1
+          fi
+
+      - name: Create repository properties
+        shell: bash
+        run: |
+          gh api --method PUT "orgs/$ORG/properties/schema/golden_path" \
+            -f value_type=single_select \
+            -F required=false \
+            -f description="Organization Golden Path enrollment" \
+            -f 'allowed_values[]=enabled' \
+            -f 'allowed_values[]=disabled' \
+            -f values_editable_by=org_actors >/dev/null
+
+          gh api --method PUT "orgs/$ORG/properties/schema/release_path" \
+            -f value_type=single_select \
+            -F required=false \
+            -f description="Approved non-production release path" \
+            -f 'allowed_values[]=eqa-only' \
+            -f 'allowed_values[]=eqa-epreprod' \
+            -f values_editable_by=org_actors >/dev/null
+
+      - name: Create or update organization rulesets
+        shell: bash
+        run: |
+          for file in governance/org-rulesets/*.json; do
+            name="$(jq -r .name "$file")"
+            id="$(gh api "orgs/$ORG/rulesets" \
+              --jq ".[] | select(.name == \"$name\") | .id" | head -n 1)"
+
+            if [[ -n "$id" ]]; then
+              gh api --method PUT "orgs/$ORG/rulesets/$id" \
+                --input "$file" >/dev/null
+              echo "Updated $name"
+            else
+              gh api --method POST "orgs/$ORG/rulesets" \
+                --input "$file" >/dev/null
+              echo "Created $name"
+            fi
+          done
+
+      - name: Mark the source repository as a template
+        shell: bash
+        run: |
+          gh api --method PATCH "repos/$ORG/golden-path-template-v2" \
+            -F is_template=true >/dev/null
+
+      - name: Summary
+        run: |
+          {
+            echo "## Golden Path organization governance applied"
+            echo "- Custom properties are available"
+            echo "- Organization rulesets were reconciled"
+            echo "- golden-path-template-v2 is marked as a template"
+          } >> "$GITHUB_STEP_SUMMARY"

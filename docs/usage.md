@@ -1,81 +1,53 @@
 # Reusable workflow usage
 
-## Design rules
+## Repository split
 
-- Caller repositories own language-specific commands.
-- Central workflows own orchestration, evidence validation, gates, summaries, and artifact handling.
-- Unit tests execute before the build to satisfy the documented fail-fast standard.
-- JUnit XML and Cobertura XML are mandatory for applications subject to the unit-testing standard.
-- New applications enforce 80% line coverage. Existing low-coverage applications may temporarily set `enforce_coverage: false` with a documented, expiring exception.
-- Artifacts are built once. Deployment workflows download and promote the existing artifact rather than rebuilding.
-- Environment secrets remain in GitHub Environments. Reusable workflows cannot receive environment secrets through `workflow_call`; the deployment job targets the requested environment directly.
-- A merged `feature-eint1-6-f###` pull request into `release-eqa-*` or `release-epreprod-*` creates the matching `f###` traceability tag on the release-branch merge commit.
-- Feature-ID tags are independent of semantic-version calculation. Re-running feature tagging is idempotent when the existing tag points to the same commit and fails safely if it points elsewhere.
-- Production release creation occurs only after production verification.
-- The automatic release chain validates that production-verification evidence belongs to the deployed main commit before tagging it.
-- Production verification does not target the protected environment a second time; the production deployment is the single approval point.
-- Re-running release creation is idempotent for a commit that already has its SemVer tag and GitHub Release.
+- `golden-path-workflows-v2` owns reusable workflow logic.
+- Each application repository owns the triggers in `.github/workflows`, the
+  language-specific commands in `scripts`, its tests, and `.zap/rules.tsv`.
+- Workflow files must remain directly under `.github/workflows`; GitHub does
+  not discover callers in a nested `golden-path` directory.
 
-## Recommended caller event model
+## Event model
 
-- A push-only branch caller handles `develop-*`, `feature-*`, `release-*`, and
-  `hotfix-*` CI/delivery. Keep integration and regression in that same run.
-- A PR-only caller validates branch transitions and release labels.
-- A merged-PR caller creates a feature-ID tag only for
-  `feature-eint1-6-f### → release-eqa-*|release-epreprod-*`.
-- A main-push caller resolves the merged release/hotfix PR, promotes its
-  previously built artifact, verifies production, and creates the release.
-- Optional security runs on PR, schedule, or manual dispatch. Set
-  `dependency_review_enabled: true` only after the dependency graph is enabled.
+| Caller | Event |
+|---|---|
+| Branch name, PR flow, and coverage | Pull request |
+| Branch delivery | Push to a standard branch |
+| Feature tag | Feature pull request merged into a release branch |
+| SemVer label | Pull request to `main` |
+| Production release | Successful `Branch Delivery Pipeline` run on `main` |
+| ZAP scan | Manual POC dispatch |
 
-Do not configure the same Standard CI caller for both `push` and
-`pull_request`; doing so intentionally creates two workflow runs for one commit.
+This separation prevents the same build pipeline from running once for `push`
+and again for `pull_request`.
 
-## Required caller permissions
+## Application contract
 
-Branch CI callers normally need:
+The delivery workflow calls these paths in the application repository:
 
-```yaml
-permissions:
-  actions: read
-  contents: read
-  pull-requests: read
-```
+- `scripts/build.sh`
+- `scripts/deploy.sh`
+- `scripts/unit-test.sh`
+- `scripts/integration-test.sh`
+- `scripts/regression-test.sh`
+- `scripts/smoke-test.sh`
+- `.zap/rules.tsv`
 
-Feature-ID tag callers need:
+The unit-test script must emit `reports/junit/results.xml` and
+`reports/coverage/cobertura.xml`; the build script must create `dist/**`.
+Application function code stays in the application repository.
 
-```yaml
-permissions:
-  contents: write
-  pull-requests: read
-```
+## Promotion model
 
-Security callers also need:
+`feature-eint1-6-f###` deploys to its EINT environment. `release-eqa-*` and
+`hotfix-eqa-*` stop after EQA. `release-epreprod-*` and
+`hotfix-epreprod-*` pass EQA and then promote the same artifact through
+ePreProd. A successful merge into `main` promotes that artifact to production,
+verifies it, and then creates the release.
 
-```yaml
-permissions:
-  contents: read
-  security-events: write
-  pull-requests: read
-```
+## POC pinning
 
-Release callers need:
-
-```yaml
-permissions:
-  actions: read
-  contents: write
-  id-token: write
-  pull-requests: read
-```
-
-## Artifact repository adapter
-
-The POC uses GitHub Actions artifacts so it runs without enterprise credentials. For production, replace the artifact upload/download adapter with the approved Artifactory integration while retaining:
-
-1. One version calculation
-2. One immutable build
-3. QA promotion
-4. Production promotion
-5. Post-production verification
-6. Final tag and GitHub Release
+Callers use `@main` so the demonstration reflects this repository immediately.
+Before production adoption, tag this repository and pin every caller to an
+immutable version or commit SHA.

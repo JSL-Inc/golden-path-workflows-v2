@@ -1,0 +1,33 @@
+name: PR Flow
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Branch Flow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source and target branches
+        shell: bash
+        env:
+          SOURCE: ${{ github.head_ref }}
+          TARGET: ${{ github.base_ref }}
+        run: |
+          case "$SOURCE:$TARGET" in
+            develop-*:feature-eint[1-6]-f[0-9]* | \
+            feature-eint[1-6]-f[0-9]*:release-eqa-* | \
+            feature-eint[1-6]-f[0-9]*:release-epreprod-* | \
+            release-eqa-*:main | release-epreprod-*:main | \
+            hotfix-eqa-*:main | hotfix-epreprod-*:main)
+              echo "Allowed promotion: $SOURCE -> $TARGET"
+              ;;
+            *)
+              echo "::error::Unsupported promotion: $SOURCE -> $TARGET"
+              exit 1
+              ;;
+          esac

@@ -1,0 +1,33 @@
+name: PR SemVer Check
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Release Label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require exactly one SemVer label
+        shell: bash
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          count=0
+
+          for label in major minor patch; do
+            if [[ " $LABELS " == *" $label "* ]]; then
+              count=$((count + 1))
+            fi
+          done
+
+          if [[ "$count" -ne 1 ]]; then
+            echo "::error::Add exactly one release label: major, minor, or patch."
+            exit 1
+          fi
+
+          echo "Exactly one SemVer label is present."

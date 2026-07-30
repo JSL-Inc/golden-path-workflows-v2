@@ -1,32 +1,23 @@
 # Golden Path Workflows v2
 
-Central reusable GitHub Actions workflows for the COUNTRY GitLab-to-GitHub proof of concept.
+Central reusable GitHub Actions workflows for the golden-path proof of concept.
+Application repositories keep only small event callers and their application
+scripts; orchestration and gates live here.
 
-## Workflows
+## Reusable workflows
 
-| Workflow | Purpose |
+| File | Responsibility |
 |---|---|
-| `reusable-ci.yml` | Dependency restore, unit tests, JUnit XML, Cobertura XML, 80% coverage gate, build, lint, and artifact publishing |
-| `reusable-pr-policy.yml` | COUNTRY branch-transition validation and exact semantic-version label validation |
-| `reusable-feature-id-tag.yml` | Idempotent Rally feature-ID tagging after a feature branch is merged into a release branch |
-| `reusable-security.yml` | Optional CodeQL SAST and opt-in dependency review |
-| `reusable-dast.yml` | OWASP ZAP scan against a non-production URL |
-| `reusable-deploy.yml` | Promote an existing build artifact into a protected GitHub Environment |
-| `reusable-production-verification.yml` | Post-deployment production health verification |
-| `reusable-release.yml` | Idempotent semantic-version calculation and verified GitHub Release creation |
+| `branch-validation.yml` | COUNTRY branch-name policy |
+| `pr-flow.yml` | Allowed branch promotion paths |
+| `code-coverage.yml` | Unit tests, JUnit, Cobertura, 80% coverage, and code quality |
+| `new-deploy.yml` | Build once, deploy, test, DAST policy, gates, optional ePreProd, and production verification |
+| `feature-tagging.yml` | Create the `f###` traceability tag after a feature merge |
+| `pr-semver-check.yml` | Require exactly one `major`, `minor`, or `patch` label |
+| `release.yml` | Create the SemVer tag and GitHub Release from the verified production artifact |
+| `owasp-zap-scan.yml` | Run a manually targeted OWASP ZAP scan |
 
-Consumers should call the `v2` release branch:
-
-```yaml
-uses: JSL-Inc/golden-path-workflows-v2/.github/workflows/reusable-ci.yml@v2
-```
-
-The `v2` branch is the POC release channel. A production implementation should use immutable release tags or commit SHAs.
-
-Application callers should use one push-only branch workflow for CI, integration,
-regression, and non-production delivery; one PR-only policy workflow; one
-merge-only feature-ID tag workflow; and one main-push production-release
-workflow. This keeps status checks visible without running the same CI workload
-once for `push` and again for `pull_request`.
+The POC callers reference `@main`. A production rollout should publish an
+immutable tag such as `v2.0.0` and update callers to that tag.
 
 See [docs/usage.md](docs/usage.md).

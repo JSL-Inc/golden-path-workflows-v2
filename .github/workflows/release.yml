@@ -1,0 +1,202 @@
+name: Production Release
+
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: production-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create Production Release
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out deployed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Calculate release version
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          TARGET_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          pull_requests="$(
+            gh api "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls"
+          )"
+
+          pr="$(
+            jq -c \
+              --arg base "$TARGET_BRANCH" \
+              '[
+                .[]
+                | select(
+                    .merged_at != null
+                    and .base.ref == $base
+                    and (
+                      (.head.ref | startswith("release-"))
+                      or
+                      (.head.ref | startswith("hotfix-"))
+                    )
+                  )
+              ][0]' <<< "$pull_requests"
+          )"
+
+          if [[ -z "$pr" || "$pr" == "null" ]]; then
+            echo "::error::No merged release or hotfix PR was found."
+            exit 1
+          fi
+
+          pr_number="$(jq -r '.number' <<< "$pr")"
+          pr_title="$(jq -r '.title' <<< "$pr")"
+          pr_url="$(jq -r '.html_url' <<< "$pr")"
+          source_branch="$(jq -r '.head.ref' <<< "$pr")"
+          labels="$(jq -r '[.labels[].name] | join(" ")' <<< "$pr")"
+
+          count=0
+          bump=""
+
+          for label in major minor patch; do
+            if [[ " $labels " == *" $label "* ]]; then
+              count=$((count + 1))
+              bump="$label"
+            fi
+          done
+
+          if [[ "$count" -ne 1 ]]; then
+            echo "::error::PR #${pr_number} must have exactly one of: major, minor, patch."
+            exit 1
+          fi
+
+          existing="$(
+            git tag --points-at "$RELEASE_SHA" \
+              --list 'v[0-9]*.[0-9]*.[0-9]*' |
+              head -n 1
+          )"
+
+          if [[ -n "$existing" ]]; then
+            version="$existing"
+          else
+            latest="$(
+              git tag \
+                --list 'v[0-9]*.[0-9]*.[0-9]*' \
+                --sort=-v:refname |
+                head -n 1
+            )"
+
+            latest="${latest:-v0.0.0}"
+            IFS=. read -r major minor patch <<< "${latest#v}"
+
+            case "$bump" in
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              patch)
+                patch=$((patch + 1))
+                ;;
+            esac
+
+            version="v${major}.${minor}.${patch}"
+          fi
+
+          {
+            echo "version=$version"
+            echo "bump=$bump"
+            echo "pr_number=$pr_number"
+            echo "pr_title=$pr_title"
+            echo "pr_url=$pr_url"
+            echo "source_branch=$source_branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download validated build artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh run download "$RUN_ID" \
+            --name application-package \
+            --dir release-artifact
+
+      - name: Package release artifact
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          tar -czf "application-package-${VERSION}.tgz" \
+            -C release-artifact .
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          BUMP: ${{ steps.release.outputs.bump }}
+          PR_NUMBER: ${{ steps.release.outputs.pr_number }}
+          PR_TITLE: ${{ steps.release.outputs.pr_title }}
+          PR_URL: ${{ steps.release.outputs.pr_url }}
+          SOURCE_BRANCH: ${{ steps.release.outputs.source_branch }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          DELIVERY_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "$VERSION already exists; nothing to recreate."
+            exit 0
+          fi
+
+          delivery_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${DELIVERY_RUN_ID}"
+
+          notes="$(
+            printf '%s\n' \
+              '## Release information' \
+              '' \
+              "- **Version:** ${VERSION}" \
+              "- **Classification:** ${BUMP}" \
+              "- **Source branch:** \`${SOURCE_BRANCH}\`" \
+              "- **Release PR:** [#${PR_NUMBER} — ${PR_TITLE}](${PR_URL})" \
+              "- **Delivery pipeline:** [Run ${DELIVERY_RUN_ID}](${delivery_url})" \
+              '- **Production deployment:** passed' \
+              '- **Production verification:** passed' \
+              '' \
+              '## Release assets' \
+              '' \
+              "- \`application-package-${VERSION}.tgz\`" \
+              ''
+          )"
+
+          gh release create "$VERSION" \
+            "application-package-${VERSION}.tgz#Release Build Artifact" \
+            --target "$RELEASE_SHA" \
+            --title "Production Release ${VERSION}" \
+            --notes "$notes" \
+            --generate-notes
+
+      - name: Summary
+        run: |
+          {
+            echo "## Production Release ${{ steps.release.outputs.version }}"
+            echo "- Classification: ${{ steps.release.outputs.bump }}"
+            echo "- Source branch: ${{ steps.release.outputs.source_branch }}"
+            echo "- Release PR: #${{ steps.release.outputs.pr_number }}"
+            echo "- Delivery pipeline: ${{ github.event.workflow_run.id }}"
+            echo "- Release artifact attached"
+            echo "- GitHub release and tag created"
+          } >> "$GITHUB_STEP_SUMMARY"

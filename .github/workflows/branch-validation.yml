@@ -1,0 +1,26 @@
+name: Branch Validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Branch Name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch name
+        shell: bash
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          if [[ "$BRANCH" =~ ^develop-[A-Za-z0-9._-]+$ ||
+                "$BRANCH" =~ ^feature-eint[1-6]-f[0-9]+$ ||
+                "$BRANCH" =~ ^(release|hotfix)-(eqa|epreprod)-[A-Za-z0-9._-]+$ ]]; then
+            echo "Valid branch name: $BRANCH"
+          else
+            echo "::error::Unsupported branch name: $BRANCH"
+            exit 1
+          fi

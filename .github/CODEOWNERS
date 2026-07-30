@@ -1,0 +1,6 @@
+# Replace the POC owner with the approved DevSecOps platform team.
+* @jacoblaw1
+
+/.github/workflows/ @jacoblaw1
+/docs/ @jacoblaw1
+

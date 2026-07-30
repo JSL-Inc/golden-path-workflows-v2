@@ -1,0 +1,44 @@
+name: Feature Tagging
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Feature Tag
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.head_ref, 'feature-eint')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create feature tag
+        shell: bash
+        env:
+          FEATURE_BRANCH: ${{ github.head_ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          if [[ ! "$FEATURE_BRANCH" =~ (^|-)f([0-9]+)($|-) ]]; then
+            echo "::error::No f### feature ID was found in $FEATURE_BRANCH."
+            exit 1
+          fi
+
+          tag="f${BASH_REMATCH[2]}"
+          existing="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+
+          if [[ -n "$existing" && "$existing" != "$MERGE_SHA" ]]; then
+            echo "::error::$tag already points to another commit."
+            exit 1
+          elif [[ -z "$existing" ]]; then
+            git tag "$tag" "$MERGE_SHA"
+            git push origin "$tag"
+          fi
+
+          echo "Feature tag: $tag"

@@ -99,7 +99,6 @@ jobs:
   build:
     name: Build and Quality Checks
     needs: route
-    if: needs.route.outputs.branch_type != 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -140,84 +139,10 @@ jobs:
           path: dist/**
           if-no-files-found: error
 
-  promote_release_artifact:
-    name: Promote Release Artifact
-    needs: route
-    if: needs.route.outputs.branch_type == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Find the merged release candidate
-        id: candidate
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ github.sha }}
-          TARGET_BRANCH: ${{ github.ref_name }}
-        run: |
-          pull_requests="$(
-            gh api "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls"
-          )"
-
-          candidate="$(
-            jq -c \
-              --arg base "$TARGET_BRANCH" \
-              '[
-                .[]
-                | select(
-                    .merged_at != null
-                    and .base.ref == $base
-                    and (
-                      (.head.ref | startswith("release-"))
-                      or
-                      (.head.ref | startswith("hotfix-"))
-                    )
-                  )
-              ][0]' <<< "$pull_requests"
-          )"
-
-          if [[ -z "$candidate" || "$candidate" == "null" ]]; then
-            echo "::error::No merged release or hotfix PR was found."
-            exit 1
-          fi
-
-          source_branch="$(jq -r '.head.ref' <<< "$candidate")"
-          source_sha="$(jq -r '.head.sha' <<< "$candidate")"
-
-          run_id="$(
-            gh run list               --workflow new-deploy.yml               --branch "$source_branch"               --commit "$source_sha"               --event push               --status success               --limit 1               --json databaseId               --jq '.[0].databaseId'
-          )"
-
-          if [[ -z "$run_id" ]]; then
-            echo "::error::No successful release-candidate pipeline was found."
-            exit 1
-          fi
-
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "Promoting artifact from $source_branch run $run_id."
-
-      - name: Download release-candidate artifact
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ steps.candidate.outputs.run_id }}
-        run: |
-          gh run download "$RUN_ID"             --name application-package             --dir promoted-artifact
-
-      - name: Publish artifact for production jobs
-        uses: actions/upload-artifact@v4
-        with:
-          name: application-package
-          path: promoted-artifact/**
-          if-no-files-found: error
-
   deploy:
     name: Deploy
-    needs: [route, build, promote_release_artifact]
-    if: >-
-      always() &&
-      needs.route.outputs.deploy == 'true' &&
-      (needs.build.result == 'success' ||
-       needs.promote_release_artifact.result == 'success')
+    needs: [route, build]
+    if: needs.route.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     environment:
       name: ${{ needs.route.outputs.environment }}

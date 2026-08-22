@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload unit-test and coverage evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-evidence
           path: |
@@ -134,7 +134,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload application artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: application-package
           path: dist/**
@@ -204,7 +204,7 @@ jobs:
           gh run download "$RUN_ID"             --name application-package             --dir promoted-artifact
 
       - name: Publish artifact for production jobs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: application-package
           path: promoted-artifact/**
@@ -253,7 +253,7 @@ jobs:
 
       - name: Upload integration evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-evidence
           path: reports/integration/**
@@ -274,7 +274,7 @@ jobs:
 
       - name: Upload regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: regression-evidence
           path: reports/regression/**
@@ -420,7 +420,7 @@ jobs:
 
       - name: Upload integration evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: epreprod-integration-evidence
           path: reports/integration/**
@@ -439,7 +439,7 @@ jobs:
 
       - name: Upload regression evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: epreprod-regression-evidence
           path: reports/regression/**

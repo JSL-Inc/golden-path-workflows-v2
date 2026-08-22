@@ -21,7 +21,7 @@ jobs:
     name: DAST
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scan non-production target
         continue-on-error: ${{ inputs.blocking == false }}
         uses: zaproxy/action-full-scan@v0.12.0

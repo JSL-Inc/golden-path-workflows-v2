@@ -1,0 +1,192 @@
+name: Reusable Standard CI
+
+on:
+  workflow_call:
+    inputs:
+      prepare_command:
+        description: Optional dependency restore or environment setup command
+        required: false
+        type: string
+        default: ""
+      build_command:
+        description: Command that builds or packages the application
+        required: true
+        type: string
+      unit_test_command:
+        description: Command that runs unit tests and creates JUnit and Cobertura reports
+        required: true
+        type: string
+      lint_command:
+        description: Optional linting, formatting, or static-quality command
+        required: false
+        type: string
+        default: ""
+      junit_report_path:
+        description: Path to the generated JUnit XML report
+        required: false
+        type: string
+        default: reports/junit/results.xml
+      cobertura_report_path:
+        description: Path to the generated Cobertura XML report
+        required: false
+        type: string
+        default: reports/coverage/cobertura.xml
+      coverage_language:
+        description: Primary language represented by the coverage report
+        required: true
+        type: string
+      publish_artifact:
+        description: Whether this repository produces a deployable artifact
+        required: false
+        type: boolean
+        default: true
+      artifact_name:
+        description: Name of the deployable artifact
+        required: false
+        type: string
+        default: application-package
+      artifact_path:
+        description: File or directory containing the build output
+        required: false
+        type: string
+        default: dist/**
+      retention_days:
+        description: Retention period for POC evidence and artifacts
+        required: false
+        type: number
+        default: 14
+
+permissions:
+  contents: read
+  code-quality: write
+
+jobs:
+  standard-ci:
+    name: Standard CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out application
+        uses: actions/checkout@v4
+
+      - name: Prepare build environment
+        if: inputs.prepare_command != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ inputs.prepare_command }}
+
+      - name: Build application
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ inputs.build_command }}
+
+      - name: Run unit tests and coverage
+        id: tests
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          ${{ inputs.unit_test_command }}
+
+      - name: Validate test reports
+        id: reports
+        shell: bash
+        env:
+          JUNIT_REPORT: ${{ inputs.junit_report_path }}
+          COBERTURA_REPORT: ${{ inputs.cobertura_report_path }}
+        run: |
+          test -s "$JUNIT_REPORT" || {
+            echo "::error::Required JUnit XML report is missing or empty: $JUNIT_REPORT"
+            exit 1
+          }
+
+          test -s "$COBERTURA_REPORT" || {
+            echo "::error::Required Cobertura XML report is missing or empty: $COBERTURA_REPORT"
+            exit 1
+          }
+
+          echo "JUnit report: $JUNIT_REPORT"
+          echo "Cobertura report: $COBERTURA_REPORT"
+
+      - name: Publish coverage to GitHub
+        id: coverage
+        uses: actions/upload-code-coverage@v1
+        with:
+          files: ${{ inputs.cobertura_report_path }}
+          language: ${{ inputs.coverage_language }}
+          labels: standard-ci
+
+      - name: Run code-quality checks
+        id: quality
+        if: inputs.lint_command != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ${{ inputs.lint_command }}
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-evidence
+          path: |
+            ${{ inputs.junit_report_path }}
+            ${{ inputs.cobertura_report_path }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+      - name: Publish deployable artifact
+        id: artifact
+        if: inputs.publish_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+      - name: Write CI summary
+        if: always()
+        shell: bash
+        env:
+          LINT_CONFIGURED: ${{ inputs.lint_command != '' }}
+          PUBLISH_ARTIFACT: ${{ inputs.publish_artifact }}
+        run: |
+          result() {
+            case "$1" in
+              success) echo "Passed" ;;
+              failure) echo "Failed" ;;
+              skipped|'') echo "Not run" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          {
+            echo "## Standard CI"
+            echo
+            echo "| Control | Result |"
+            echo "|---|---|"
+            echo "| Build | $(result '${{ steps.build.outcome }}') |"
+            echo "| Unit tests | $(result '${{ steps.tests.outcome }}') |"
+            echo "| JUnit and Cobertura reports | $(result '${{ steps.reports.outcome }}') |"
+            echo "| Coverage upload | $(result '${{ steps.coverage.outcome }}') |"
+
+            if [[ "$LINT_CONFIGURED" == "true" ]]; then
+              echo "| Code quality | $(result '${{ steps.quality.outcome }}') |"
+            else
+              echo "| Code quality | Not configured |"
+            fi
+
+            if [[ "$PUBLISH_ARTIFACT" == "true" ]]; then
+              echo "| Deployable artifact | $(result '${{ steps.artifact.outcome }}') |"
+            else
+              echo "| Deployable artifact | Not applicable |"
+            fi
+
+            echo
+            echo "Coverage thresholds and code-scanning severity are enforced by repository or organization rulesets."
+          } >> "$GITHUB_STEP_SUMMARY"

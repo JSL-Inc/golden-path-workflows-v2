@@ -1,0 +1,564 @@
+name: Reusable Standard CD
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Name used by Standard CI for the deployable artifact
+        required: false
+        type: string
+        default: application-package
+      caller_workflow_file:
+        description: Caller workflow filename used to locate a validated release artifact for main
+        required: false
+        type: string
+        default: golden-path.yml
+      deploy_command:
+        description: Deploy command; environment and artifact directory are appended
+        required: false
+        type: string
+        default: bash scripts/deploy.sh
+      integration_test_command:
+        description: Integration-test command; environment is appended
+        required: false
+        type: string
+        default: bash scripts/integration-test.sh
+      regression_test_command:
+        description: Regression-test command; environment is appended
+        required: false
+        type: string
+        default: bash scripts/regression-test.sh
+      smoke_test_command:
+        description: Smoke-test command; environment and artifact directory are appended
+        required: false
+        type: string
+        default: bash scripts/smoke-test.sh
+      production_verify_command:
+        description: Optional post-production verification command
+        required: false
+        type: string
+        default: ""
+      zap_rules_path:
+        description: Repository-owned ZAP rules file protected by CODEOWNERS
+        required: false
+        type: string
+        default: .zap/rules.tsv
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: standard-cd-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  route:
+    name: Determine Delivery Plan
+    if: github.event_name != 'push' || github.event.created == false
+    runs-on: ubuntu-latest
+    outputs:
+      branch_type: ${{ steps.route.outputs.branch_type }}
+      environment: ${{ steps.route.outputs.environment }}
+      deploy: ${{ steps.route.outputs.deploy }}
+      integration: ${{ steps.route.outputs.integration }}
+      regression: ${{ steps.route.outputs.regression }}
+      smoke: ${{ steps.route.outputs.smoke }}
+      dast: ${{ steps.route.outputs.dast }}
+      use_epreprod: ${{ steps.route.outputs.use_epreprod }}
+    steps:
+      - name: Map branch to delivery behavior
+        id: route
+        shell: bash
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          branch_type=""
+          environment=""
+          deploy=false
+          integration=false
+          regression=false
+          smoke=false
+          dast=false
+          use_epreprod=false
+
+          case "$BRANCH" in
+            develop-*)
+              branch_type="develop"
+              ;;
+            feature-eint[1-6]-f[0-9]*)
+              branch_type="feature"
+              environment="${BRANCH#feature-}"
+              environment="${environment%%-*}"
+              deploy=true
+              integration=true
+              regression=true
+              ;;
+            release-eqa-*|hotfix-eqa-*)
+              branch_type="${BRANCH%%-*}"
+              environment="eqa"
+              deploy=true
+              integration=true
+              regression=true
+              smoke=true
+              dast=true
+              ;;
+            release-epreprod-*|hotfix-epreprod-*)
+              branch_type="${BRANCH%%-*}"
+              environment="eqa"
+              deploy=true
+              integration=true
+              regression=true
+              smoke=true
+              dast=true
+              use_epreprod=true
+              ;;
+            main)
+              branch_type="main"
+              environment="prod"
+              deploy=true
+              smoke=true
+              ;;
+            *)
+              echo "::error::Unsupported branch name: $BRANCH"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "branch_type=$branch_type"
+            echo "environment=$environment"
+            echo "deploy=$deploy"
+            echo "integration=$integration"
+            echo "regression=$regression"
+            echo "smoke=$smoke"
+            echo "dast=$dast"
+            echo "use_epreprod=$use_epreprod"
+          } >> "$GITHUB_OUTPUT"
+
+  artifact:
+    name: Resolve Validated Artifact
+    needs: route
+    if: needs.route.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.resolve.outputs.run_id }}
+    steps:
+      - name: Resolve artifact source
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_TYPE: ${{ needs.route.outputs.branch_type }}
+          CALLER_WORKFLOW: ${{ inputs.caller_workflow_file }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$BRANCH_TYPE" != "main" ]]; then
+            echo "run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "Using the artifact created by Standard CI in this workflow run."
+            exit 0
+          fi
+
+          candidate="$(
+            gh api "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
+              --jq '[
+                .[]
+                | select(.merged_at != null)
+                | select(
+                    (.head.ref | startswith("release-")) or
+                    (.head.ref | startswith("hotfix-"))
+                  )
+              ] | sort_by(.merged_at) | last // empty'
+          )"
+
+          if [[ -z "$candidate" || "$candidate" == "null" ]]; then
+            echo "::error::No merged release or hotfix pull request was found for $RELEASE_SHA."
+            exit 1
+          fi
+
+          source_branch="$(jq -r '.head.ref' <<< "$candidate")"
+          source_sha="$(jq -r '.head.sha' <<< "$candidate")"
+
+          run_id="$(
+            gh run list \
+              --workflow "$CALLER_WORKFLOW" \
+              --branch "$source_branch" \
+              --commit "$source_sha" \
+              --event push \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId'
+          )"
+
+          if [[ -z "$run_id" || "$run_id" == "null" ]]; then
+            echo "::error::No successful release-candidate workflow run was found for $source_branch at $source_sha."
+            exit 1
+          fi
+
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Promoting the artifact from $source_branch run $run_id."
+
+      - name: Download release candidate for production
+        if: needs.route.outputs.branch_type == 'main'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: release-artifact
+
+      - name: Make promoted artifact available to this run
+        if: needs.route.outputs.branch_type == 'main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: release-artifact/**
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy ${{ needs.route.outputs.environment }}
+    needs: [route, artifact]
+    if: needs.route.outputs.deploy == 'true' && needs.artifact.result == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.route.outputs.environment }}
+    concurrency:
+      group: environment-${{ github.repository }}-${{ needs.route.outputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download application artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: promoted-artifact
+
+      - name: Deploy application
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.deploy_command }}
+          ENVIRONMENT: ${{ needs.route.outputs.environment }}
+        run: |
+          set -euo pipefail
+          $COMMAND "$ENVIRONMENT" promoted-artifact
+
+  integration:
+    name: Integration Tests
+    needs: [route, deploy]
+    if: always() && needs.route.outputs.integration == 'true' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration tests
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.integration_test_command }}
+          ENVIRONMENT: ${{ needs.route.outputs.environment }}
+        run: $COMMAND "$ENVIRONMENT"
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-evidence
+          path: reports/integration/**
+          if-no-files-found: error
+
+  regression:
+    name: Regression Tests
+    needs: [route, deploy]
+    if: always() && needs.route.outputs.regression == 'true' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression tests
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.regression_test_command }}
+          ENVIRONMENT: ${{ needs.route.outputs.environment }}
+        run: $COMMAND "$ENVIRONMENT"
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-evidence
+          path: reports/regression/**
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke Tests
+    needs: [route, deploy]
+    if: always() && needs.route.outputs.smoke == 'true' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download application artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: promoted-artifact
+      - name: Run smoke tests
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.smoke_test_command }}
+          ENVIRONMENT: ${{ needs.route.outputs.environment }}
+        run: $COMMAND "$ENVIRONMENT" promoted-artifact
+
+  dast:
+    name: DAST Policy Validation
+    needs: [route, deploy]
+    if: always() && needs.route.outputs.dast == 'true' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repository ZAP policy
+        shell: bash
+        env:
+          RULES_FILE: ${{ inputs.zap_rules_path }}
+          ENVIRONMENT: ${{ needs.route.outputs.environment }}
+        run: |
+          test -s "$RULES_FILE" || {
+            echo "::error::ZAP rules file is missing or empty: $RULES_FILE"
+            exit 1
+          }
+          awk -F '\t' 'NF != 3 { exit 1 }' "$RULES_FILE"
+          echo "DAST policy validation passed for $ENVIRONMENT."
+
+  int_gate:
+    name: INT Gate
+    needs: [route, deploy, integration, regression]
+    if: always() && needs.route.outputs.branch_type == 'feature'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate INT gate
+        shell: bash
+        env:
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          REGRESSION_RESULT: ${{ needs.regression.result }}
+        run: |
+          if [[ "$DEPLOY_RESULT" != "success" ||
+                "$INTEGRATION_RESULT" != "success" ||
+                "$REGRESSION_RESULT" != "success" ]]; then
+            echo "::error::INT deployment or testing failed."
+            exit 1
+          fi
+          echo "INT Gate passed."
+
+  qa_gate:
+    name: QA Gate
+    needs: [route, deploy, integration, regression, smoke, dast]
+    if: >-
+      always() &&
+      (needs.route.outputs.branch_type == 'release' ||
+       needs.route.outputs.branch_type == 'hotfix')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate QA gate
+        shell: bash
+        env:
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          REGRESSION_RESULT: ${{ needs.regression.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          DAST_RESULT: ${{ needs.dast.result }}
+        run: |
+          if [[ "$DEPLOY_RESULT" != "success" ||
+                "$INTEGRATION_RESULT" != "success" ||
+                "$REGRESSION_RESULT" != "success" ||
+                "$SMOKE_RESULT" != "success" ||
+                "$DAST_RESULT" != "success" ]]; then
+            echo "::error::EQA deployment or testing failed."
+            exit 1
+          fi
+          echo "QA Gate passed."
+
+  deploy_epreprod:
+    name: Deploy ePreProd
+    needs: [route, artifact, qa_gate]
+    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.qa_gate.result == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: epreprod
+    concurrency:
+      group: environment-${{ github.repository }}-epreprod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download application artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: promoted-artifact
+      - name: Deploy application
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.deploy_command }}
+        run: $COMMAND epreprod promoted-artifact
+
+  preprod_integration:
+    name: ePreProd Integration Tests
+    needs: [route, deploy_epreprod]
+    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration tests
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.integration_test_command }}
+        run: $COMMAND epreprod
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: epreprod-integration-evidence
+          path: reports/integration/**
+          if-no-files-found: error
+
+  preprod_regression:
+    name: ePreProd Regression Tests
+    needs: [route, deploy_epreprod]
+    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run regression tests
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.regression_test_command }}
+        run: $COMMAND epreprod
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: epreprod-regression-evidence
+          path: reports/regression/**
+          if-no-files-found: error
+
+  preprod_smoke:
+    name: ePreProd Smoke Tests
+    needs: [route, deploy_epreprod]
+    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download application artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: promoted-artifact
+      - name: Run smoke tests
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.smoke_test_command }}
+        run: $COMMAND epreprod promoted-artifact
+
+  preprod_dast:
+    name: ePreProd DAST Policy Validation
+    needs: [route, deploy_epreprod]
+    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repository ZAP policy
+        shell: bash
+        env:
+          RULES_FILE: ${{ inputs.zap_rules_path }}
+        run: |
+          test -s "$RULES_FILE" || {
+            echo "::error::ZAP rules file is missing or empty: $RULES_FILE"
+            exit 1
+          }
+          awk -F '\t' 'NF != 3 { exit 1 }' "$RULES_FILE"
+          echo "DAST policy validation passed for epreprod."
+
+  preprod_gate:
+    name: ePreProd Gate
+    needs:
+      - route
+      - deploy_epreprod
+      - preprod_integration
+      - preprod_regression
+      - preprod_smoke
+      - preprod_dast
+    if: always() && needs.route.outputs.use_epreprod == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate ePreProd gate
+        shell: bash
+        env:
+          DEPLOY_RESULT: ${{ needs.deploy_epreprod.result }}
+          INTEGRATION_RESULT: ${{ needs.preprod_integration.result }}
+          REGRESSION_RESULT: ${{ needs.preprod_regression.result }}
+          SMOKE_RESULT: ${{ needs.preprod_smoke.result }}
+          DAST_RESULT: ${{ needs.preprod_dast.result }}
+        run: |
+          if [[ "$DEPLOY_RESULT" != "success" ||
+                "$INTEGRATION_RESULT" != "success" ||
+                "$REGRESSION_RESULT" != "success" ||
+                "$SMOKE_RESULT" != "success" ||
+                "$DAST_RESULT" != "success" ]]; then
+            echo "::error::ePreProd deployment or testing failed."
+            exit 1
+          fi
+          echo "ePreProd Gate passed."
+
+  production_verification:
+    name: Production Verification
+    needs: [route, deploy, smoke]
+    if: always() && needs.route.outputs.branch_type == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify production delivery
+        shell: bash
+        env:
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          VERIFY_COMMAND: ${{ inputs.production_verify_command }}
+        run: |
+          if [[ "$DEPLOY_RESULT" != "success" || "$SMOKE_RESULT" != "success" ]]; then
+            echo "::error::Production deployment or smoke testing failed."
+            exit 1
+          fi
+
+          if [[ -n "$VERIFY_COMMAND" ]]; then
+            $VERIFY_COMMAND
+          fi
+
+          echo "Production Verification passed."
+
+  release_readiness:
+    name: Release Readiness
+    needs: [route, qa_gate, preprod_gate]
+    if: >-
+      always() &&
+      (needs.route.outputs.branch_type == 'release' ||
+       needs.route.outputs.branch_type == 'hotfix')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate release readiness
+        shell: bash
+        env:
+          USE_EPREPROD: ${{ needs.route.outputs.use_epreprod }}
+          QA_GATE_RESULT: ${{ needs.qa_gate.result }}
+          PREPROD_GATE_RESULT: ${{ needs.preprod_gate.result }}
+        run: |
+          if [[ "$QA_GATE_RESULT" != "success" ]]; then
+            echo "::error::The EQA deployment and QA Gate must pass."
+            exit 1
+          fi
+
+          if [[ "$USE_EPREPROD" == "true" && "$PREPROD_GATE_RESULT" != "success" ]]; then
+            echo "::error::This release requires a successful ePreProd Gate."
+            exit 1
+          fi
+
+          if [[ "$USE_EPREPROD" == "true" ]]; then
+            echo "Release Readiness passed: EQA and ePreProd are complete."
+          else
+            echo "Release Readiness passed: EQA is complete; ePreProd is not used."
+          fi

@@ -114,11 +114,14 @@ jobs:
 
       - name: Publish coverage to GitHub
         id: coverage
+        continue-on-error: true
         uses: actions/upload-code-coverage@v1
         with:
-          files: ${{ inputs.cobertura_report_path }}
+          file: ${{ inputs.cobertura_report_path }}
           language: ${{ inputs.coverage_language }}
-          labels: standard-ci
+          label: standard-ci
+          fail-on-error: false
+          token: ${{ github.token }}
 
       - name: Run code-quality checks
         id: quality

@@ -344,7 +344,11 @@ jobs:
   deploy:
     name: Deploy ${{ needs.route.outputs.environment }}
     needs: [route, artifact]
-    if: needs.route.outputs.deploy == 'true' && needs.artifact.result == 'success'
+    if: >-
+      always() &&
+      needs.route.result == 'success' &&
+      needs.route.outputs.deploy == 'true' &&
+      needs.artifact.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: ${{ needs.route.outputs.environment }}

@@ -56,7 +56,7 @@ permissions:
 
 concurrency:
   group: standard-cd-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_name != ('main' || 'v0.*') }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && !startsWith(github.ref_name, 'v0.') }}
 
 jobs:
   route:
@@ -147,7 +147,7 @@ jobs:
     needs: route
     if: >-
       needs.route.outputs.deploy == 'true' &&
-      needs.route.outputs.branch_type != ('main' || 'v0.*')
+      needs.route.outputs.branch_type != 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     outputs:
@@ -223,7 +223,7 @@ jobs:
     if: >-
       always() &&
       needs.route.outputs.deploy == 'true' &&
-      (needs.route.outputs.branch_type == ('main' || 'v0.*')||
+      (needs.route.outputs.branch_type == 'main' ||
        needs.wait_for_ci.result == 'success')
     runs-on: ubuntu-latest
     outputs:
@@ -243,7 +243,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "$BRANCH_TYPE" != ("main" || "v0.*") ]]; then
+          if [[ "$BRANCH_TYPE" != "main" ]]; then
             if [[ -z "$CI_RUN_ID" ]]; then
               echo "::error::No successful CI run was resolved for $RELEASE_SHA."
               exit 1
@@ -631,7 +631,7 @@ jobs:
   production_verification:
     name: Production Verification
     needs: [route, deploy, smoke]
-    if: always() && needs.route.outputs.branch_type == ('main' || 'v0.*')
+    if: always() && needs.route.outputs.branch_type == 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -690,7 +690,7 @@ jobs:
     needs: [route, production_verification]
     if: >-
       always() &&
-      needs.route.outputs.branch_type == ('main' || 'v0.*') &&
+      needs.route.outputs.branch_type == 'main' &&
       needs.production_verification.result == 'success'
     runs-on: ubuntu-latest
     concurrency:

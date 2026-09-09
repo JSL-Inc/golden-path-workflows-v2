@@ -147,7 +147,7 @@ jobs:
     needs: route
     if: >-
       needs.route.outputs.deploy == 'true' &&
-      needs.route.outputs.branch_type != 'main'
+      needs.route.outputs.branch_type != ('main' || 'v0.*')
     runs-on: ubuntu-latest
     timeout-minutes: 35
     outputs:

@@ -278,6 +278,7 @@ jobs:
 
           run_id="$(
             gh run list \
+              --repo "$GITHUB_REPOSITORY" \
               --workflow "$CI_WORKFLOW" \
               --branch "$source_branch" \
               --commit "$source_sha" \
@@ -295,6 +296,7 @@ jobs:
 
           validated_cd_run_id="$(
             gh run list \
+              --repo "$GITHUB_REPOSITORY" \
               --workflow "$CD_WORKFLOW" \
               --branch "$source_branch" \
               --commit "$source_sha" \

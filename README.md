@@ -8,8 +8,8 @@ scripts; orchestration and gates live here.
 
 | File | Responsibility |
 |---|---|
-| `reusable-standard-ci.yml` | Build, unit tests, JUnit/Cobertura evidence, code quality, and the deployable artifact |
-| `reusable-standard-cd.yml` | Wait for exact-SHA CI success, promote the validated artifact, deploy, test, evaluate gates, and create the production release |
+| `reusable-standard-ci.yml` | Build, test, evidence, package publication, or immutable OCI image publication to ACR/custom registries |
+| `reusable-standard-cd.yml` | Wait for exact-SHA CI, promote package/image metadata, deploy to Azure Container Apps or a custom provider, test, gate, and release |
 | `branch-validation.yml` | COUNTRY branch-name policy |
 | `pr-flow.yml` | Allowed branch promotion paths |
 | `code-coverage.yml` | Legacy POC coverage workflow retained for existing callers |

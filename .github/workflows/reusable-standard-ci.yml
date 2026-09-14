@@ -9,7 +9,7 @@ on:
         type: string
         default: ""
       build_command:
-        description: Command that builds or packages the application
+        description: Command that validates or builds the application source
         required: true
         type: string
       unit_test_command:
@@ -35,21 +35,61 @@ on:
         description: Primary language represented by the coverage report
         required: true
         type: string
+      artifact_type:
+        description: Deployable artifact type; package preserves legacy behavior and container publishes an immutable image descriptor
+        required: false
+        type: string
+        default: package
       publish_artifact:
-        description: Whether this repository produces a deployable artifact
+        description: Publish the deployable package or container descriptor; containers are additionally restricted to push events
         required: false
         type: boolean
         default: true
       artifact_name:
-        description: Name of the deployable artifact
+        description: Name of the deployable artifact or deployment descriptor
         required: false
         type: string
         default: application-package
       artifact_path:
-        description: File or directory containing the build output
+        description: Package output path used when artifact_type is package
         required: false
         type: string
         default: dist/**
+      registry_provider:
+        description: Container registry provider; acr uses Azure OIDC and custom uses the custom registry settings
+        required: false
+        type: string
+        default: acr
+      acr_name:
+        description: Azure Container Registry name without the azurecr.io suffix
+        required: false
+        type: string
+        default: ""
+      registry_server:
+        description: Custom OCI registry hostname
+        required: false
+        type: string
+        default: ""
+      image_repository:
+        description: Repository path for the container image
+        required: false
+        type: string
+        default: ""
+      dockerfile:
+        description: Dockerfile used to build the deployable image
+        required: false
+        type: string
+        default: Dockerfile
+      build_context:
+        description: Docker build context
+        required: false
+        type: string
+        default: .
+      custom_registry_login_command:
+        description: Login command for a custom OCI registry; credentials must come from inherited secrets
+        required: false
+        type: string
+        default: ""
       retention_days:
         description: Retention period for POC evidence and artifacts
         required: false
@@ -58,6 +98,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   code-quality: write
 
 jobs:
@@ -103,14 +144,10 @@ jobs:
             echo "::error::Required JUnit XML report is missing or empty: $JUNIT_REPORT"
             exit 1
           }
-
           test -s "$COBERTURA_REPORT" || {
             echo "::error::Required Cobertura XML report is missing or empty: $COBERTURA_REPORT"
             exit 1
           }
-
-          echo "JUnit report: $JUNIT_REPORT"
-          echo "Cobertura report: $COBERTURA_REPORT"
 
       - name: Publish coverage to GitHub
         id: coverage
@@ -142,13 +179,143 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
 
-      - name: Publish deployable artifact
-        id: artifact
-        if: inputs.publish_artifact
+      - name: Resolve container destination
+        id: container
+        if: inputs.artifact_type == 'container'
+        shell: bash
+        env:
+          PROVIDER: ${{ inputs.registry_provider }}
+          ACR_NAME: ${{ inputs.acr_name }}
+          CUSTOM_SERVER: ${{ inputs.registry_server }}
+          IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE_REPOSITORY" || {
+            echo "::error::image_repository is required for container delivery."
+            exit 1
+          }
+
+          case "$PROVIDER" in
+            acr)
+              test -n "$ACR_NAME" || {
+                echo "::error::acr_name is required when registry_provider is acr."
+                exit 1
+              }
+              registry_server="${ACR_NAME}.azurecr.io"
+              ;;
+            custom)
+              test -n "$CUSTOM_SERVER" || {
+                echo "::error::registry_server is required when registry_provider is custom."
+                exit 1
+              }
+              registry_server="${CUSTOM_SERVER%/}"
+              ;;
+            *)
+              echo "::error::Unsupported registry_provider: $PROVIDER"
+              exit 1
+              ;;
+          esac
+
+          echo "registry_server=$registry_server" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${registry_server}/${IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Azure with OIDC
+        if: inputs.artifact_type == 'container' && inputs.registry_provider == 'acr' && inputs.publish_artifact && github.event_name == 'push'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        if: inputs.artifact_type == 'container' && inputs.registry_provider == 'acr' && inputs.publish_artifact && github.event_name == 'push'
+        shell: bash
+        env:
+          ACR_NAME: ${{ inputs.acr_name }}
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Log in to custom container registry
+        if: inputs.artifact_type == 'container' && inputs.registry_provider == 'custom' && inputs.publish_artifact && github.event_name == 'push'
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.custom_registry_login_command }}
+          REGISTRY_SERVER: ${{ steps.container.outputs.registry_server }}
+        run: |
+          set -euo pipefail
+          test -n "$COMMAND" || {
+            echo "::error::custom_registry_login_command is required for custom registry publication."
+            exit 1
+          }
+          $COMMAND
+
+      - name: Set up Docker Buildx
+        if: inputs.artifact_type == 'container'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build container image
+        id: container_build
+        if: inputs.artifact_type == 'container'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          push: ${{ github.event_name == 'push' && inputs.publish_artifact }}
+          tags: ${{ steps.container.outputs.image_tag }}
+          provenance: true
+          sbom: true
+
+      - name: Create immutable deployment descriptor
+        if: inputs.artifact_type == 'container' && inputs.publish_artifact && github.event_name == 'push'
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ steps.container.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.container_build.outputs.digest }}
+          REGISTRY_PROVIDER: ${{ inputs.registry_provider }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::Container build did not return a valid immutable digest."
+            exit 1
+          }
+
+          image_repository="${IMAGE_TAG%:*}"
+          image_reference="${image_repository}@${IMAGE_DIGEST}"
+          mkdir -p dist/deployment
+          jq -n \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg registry_provider "$REGISTRY_PROVIDER" \
+            --arg image_tag "$IMAGE_TAG" \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg image_reference "$image_reference" \
+            '{
+              schemaVersion: 1,
+              artifactType: "container",
+              sourceSha: $source_sha,
+              registryProvider: $registry_provider,
+              imageTag: $image_tag,
+              imageDigest: $image_digest,
+              imageReference: $image_reference
+            }' > dist/deployment/deployment-metadata.json
+
+          echo "Published immutable image: $image_reference"
+
+      - name: Publish package artifact
+        id: package_artifact
+        if: inputs.artifact_type == 'package' && inputs.publish_artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}
           path: ${{ inputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+
+      - name: Publish container deployment descriptor
+        id: container_artifact
+        if: inputs.artifact_type == 'container' && inputs.publish_artifact && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/deployment/deployment-metadata.json
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
 
@@ -157,7 +324,10 @@ jobs:
         shell: bash
         env:
           LINT_CONFIGURED: ${{ inputs.lint_command != '' }}
+          ARTIFACT_TYPE: ${{ inputs.artifact_type }}
           PUBLISH_ARTIFACT: ${{ inputs.publish_artifact }}
+          PACKAGE_OUTCOME: ${{ steps.package_artifact.outcome }}
+          CONTAINER_OUTCOME: ${{ steps.container_artifact.outcome }}
         run: |
           result() {
             case "$1" in
@@ -167,6 +337,11 @@ jobs:
               *) echo "$1" ;;
             esac
           }
+
+          artifact_outcome="$PACKAGE_OUTCOME"
+          if [[ "$ARTIFACT_TYPE" == "container" ]]; then
+            artifact_outcome="$CONTAINER_OUTCOME"
+          fi
 
           {
             echo "## Standard CI"
@@ -184,12 +359,16 @@ jobs:
               echo "| Code quality | Not configured |"
             fi
 
-            if [[ "$PUBLISH_ARTIFACT" == "true" ]]; then
-              echo "| Deployable artifact | $(result '${{ steps.artifact.outcome }}') |"
+            if [[ "$ARTIFACT_TYPE" == "container" ]]; then
+              echo "| Container build | $(result '${{ steps.container_build.outcome }}') |"
+            fi
+
+            if [[ "$PUBLISH_ARTIFACT" == "true" && "${{ github.event_name }}" == "push" ]]; then
+              echo "| Deployable $ARTIFACT_TYPE | $(result "$artifact_outcome") |"
             else
-              echo "| Deployable artifact | Not applicable |"
+              echo "| Deployable $ARTIFACT_TYPE | Validated only; not published |"
             fi
 
             echo
-            echo "Coverage thresholds and code-scanning severity are enforced by repository or organization rulesets."
+            echo "Container images are published only for push events and promoted by immutable digest."
           } >> "$GITHUB_STEP_SUMMARY"

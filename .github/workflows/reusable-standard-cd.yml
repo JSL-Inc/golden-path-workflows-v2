@@ -18,8 +18,18 @@ on:
         required: false
         type: string
         default: golden-path-cd.yml
+      artifact_type:
+        description: Deployable artifact type; package preserves legacy command deployment and container consumes deployment-metadata.json
+        required: false
+        type: string
+        default: package
+      deployment_provider:
+        description: Deployment provider; azure-container-apps is the baseline and custom uses deploy_command
+        required: false
+        type: string
+        default: custom
       deploy_command:
-        description: Deploy command; environment and artifact directory are appended
+        description: Custom deploy command; environment and artifact directory are appended
         required: false
         type: string
         default: bash scripts/deploy.sh
@@ -52,11 +62,12 @@ on:
 permissions:
   actions: read
   contents: write
+  id-token: write
   pull-requests: read
 
 concurrency:
   group: standard-cd-${{ github.repository }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_name != 'main' && !startsWith(github.ref_name, 'v0.') }}
+  cancel-in-progress: ${{ github.ref_name != 'main' && !startsWith(github.ref_name, 'v0.') && !startsWith(github.ref_name, 'v1.') }}
 
 jobs:
   route:
@@ -119,7 +130,7 @@ jobs:
               dast=true
               use_epreprod=true
               ;;
-            main|v0.*)
+            main|v0.*|v1.*)
               branch_type="main"
               environment="prod"
               deploy=true
@@ -147,7 +158,7 @@ jobs:
     needs: route
     if: >-
       needs.route.outputs.deploy == 'true' &&
-      needs.route.outputs.branch_type != ('main' || 'v0.*')
+      needs.route.outputs.branch_type != 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     outputs:
@@ -326,12 +337,41 @@ jobs:
 
       - name: Validate downloaded artifact
         shell: bash
+        env:
+          ARTIFACT_TYPE: ${{ inputs.artifact_type }}
+          BRANCH_TYPE: ${{ needs.route.outputs.branch_type }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           test -n "$(find source-artifact -type f -print -quit)" || {
             echo "::error::No files were downloaded from the source CI run."
             exit 1
           }
+
+          if [[ "$ARTIFACT_TYPE" == "container" ]]; then
+            descriptor="source-artifact/deployment-metadata.json"
+            test -s "$descriptor" || {
+              echo "::error::Container deployment descriptor is missing: $descriptor"
+              exit 1
+            }
+
+            jq -e '
+              .schemaVersion == 1 and
+              .artifactType == "container" and
+              (.sourceSha | test("^[0-9a-f]{40}$")) and
+              (.imageDigest | test("^sha256:[0-9a-f]{64}$")) and
+              (.imageReference | test("@sha256:[0-9a-f]{64}$"))
+            ' "$descriptor" >/dev/null || {
+              echo "::error::Container deployment descriptor is invalid."
+              exit 1
+            }
+
+            source_sha="$(jq -r '.sourceSha' "$descriptor")"
+            if [[ "$BRANCH_TYPE" != "main" && "$source_sha" != "$EXPECTED_SHA" ]]; then
+              echo "::error::Artifact source SHA $source_sha does not match deployment SHA $EXPECTED_SHA."
+              exit 1
+            fi
+          fi
 
       - name: Make artifact available to deployment jobs
         uses: actions/upload-artifact@v4
@@ -350,6 +390,8 @@ jobs:
       needs.route.outputs.deploy == 'true' &&
       needs.artifact.result == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      application_url: ${{ steps.deploy_aca.outputs.application_url || steps.deploy_custom.outputs.application_url }}
     environment:
       name: ${{ needs.route.outputs.environment }}
     concurrency:
@@ -364,14 +406,88 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: promoted-artifact
 
-      - name: Deploy application
+      - name: Validate deployment provider
+        shell: bash
+        env:
+          ARTIFACT_TYPE: ${{ inputs.artifact_type }}
+          DEPLOYMENT_PROVIDER: ${{ inputs.deployment_provider }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOYMENT_PROVIDER" in
+            azure-container-apps)
+              [[ "$ARTIFACT_TYPE" == "container" ]] || {
+                echo "::error::azure-container-apps requires artifact_type=container."
+                exit 1
+              }
+              ;;
+            custom) ;;
+            *)
+              echo "::error::Unsupported deployment_provider: $DEPLOYMENT_PROVIDER"
+              exit 1
+              ;;
+          esac
+
+      - name: Log in to Azure with OIDC
+        if: inputs.deployment_provider == 'azure-container-apps'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy immutable image to Azure Container Apps
+        id: deploy_aca
+        if: inputs.deployment_provider == 'azure-container-apps'
+        shell: bash
+        env:
+          CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          test -n "$CONTAINER_APP_NAME" || {
+            echo "::error::AZURE_CONTAINER_APP_NAME must be configured on the GitHub environment."
+            exit 1
+          }
+          test -n "$RESOURCE_GROUP" || {
+            echo "::error::AZURE_RESOURCE_GROUP must be configured on the GitHub environment."
+            exit 1
+          }
+
+          image_reference="$(jq -r '.imageReference' promoted-artifact/deployment-metadata.json)"
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$image_reference" \
+            --output none
+
+          fqdn="$(az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+          test -n "$fqdn" || {
+            echo "::error::The deployed Container App does not expose an ingress FQDN."
+            exit 1
+          }
+
+          echo "application_url=https://$fqdn" >> "$GITHUB_OUTPUT"
+          echo "Deployed $image_reference to https://$fqdn"
+
+      - name: Run custom deployment adapter
+        id: deploy_custom
+        if: inputs.deployment_provider == 'custom'
         shell: bash
         env:
           COMMAND: ${{ inputs.deploy_command }}
           ENVIRONMENT: ${{ needs.route.outputs.environment }}
+          APPLICATION_URL: ${{ vars.APPLICATION_URL }}
         run: |
           set -euo pipefail
           $COMMAND "$ENVIRONMENT" promoted-artifact
+          if [[ -n "$APPLICATION_URL" ]]; then
+            echo "application_url=${APPLICATION_URL%/}" >> "$GITHUB_OUTPUT"
+          fi
 
   integration:
     name: Integration Tests
@@ -385,7 +501,8 @@ jobs:
         env:
           COMMAND: ${{ inputs.integration_test_command }}
           ENVIRONMENT: ${{ needs.route.outputs.environment }}
-        run: $COMMAND "$ENVIRONMENT"
+          APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
+        run: $COMMAND "$ENVIRONMENT" "$APPLICATION_URL"
       - name: Upload integration evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -406,7 +523,8 @@ jobs:
         env:
           COMMAND: ${{ inputs.regression_test_command }}
           ENVIRONMENT: ${{ needs.route.outputs.environment }}
-        run: $COMMAND "$ENVIRONMENT"
+          APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
+        run: $COMMAND "$ENVIRONMENT" "$APPLICATION_URL"
       - name: Upload regression evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -432,7 +550,14 @@ jobs:
         env:
           COMMAND: ${{ inputs.smoke_test_command }}
           ENVIRONMENT: ${{ needs.route.outputs.environment }}
-        run: $COMMAND "$ENVIRONMENT" promoted-artifact
+          APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
+          ARTIFACT_TYPE: ${{ inputs.artifact_type }}
+        run: |
+          if [[ "$ARTIFACT_TYPE" == "container" ]]; then
+            $COMMAND "$ENVIRONMENT" "$APPLICATION_URL"
+          else
+            $COMMAND "$ENVIRONMENT" promoted-artifact
+          fi
 
   dast:
     name: DAST Policy Validation
@@ -508,6 +633,8 @@ jobs:
     needs: [route, artifact, qa_gate]
     if: always() && needs.route.outputs.use_epreprod == 'true' && needs.qa_gate.result == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      application_url: ${{ steps.deploy_aca.outputs.application_url || steps.deploy_custom.outputs.application_url }}
     environment:
       name: epreprod
     concurrency:
@@ -520,11 +647,62 @@ jobs:
         with:
           name: ${{ inputs.artifact_name }}
           path: promoted-artifact
-      - name: Deploy application
+
+      - name: Log in to Azure with OIDC
+        if: inputs.deployment_provider == 'azure-container-apps'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy immutable image to Azure Container Apps
+        id: deploy_aca
+        if: inputs.deployment_provider == 'azure-container-apps'
+        shell: bash
+        env:
+          CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          test -n "$CONTAINER_APP_NAME" || {
+            echo "::error::AZURE_CONTAINER_APP_NAME must be configured on the epreprod GitHub environment."
+            exit 1
+          }
+          test -n "$RESOURCE_GROUP" || {
+            echo "::error::AZURE_RESOURCE_GROUP must be configured on the epreprod GitHub environment."
+            exit 1
+          }
+
+          image_reference="$(jq -r '.imageReference' promoted-artifact/deployment-metadata.json)"
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$image_reference" \
+            --output none
+
+          fqdn="$(az containerapp show \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv)"
+          test -n "$fqdn"
+          echo "application_url=https://$fqdn" >> "$GITHUB_OUTPUT"
+
+      - name: Run custom deployment adapter
+        id: deploy_custom
+        if: inputs.deployment_provider == 'custom'
         shell: bash
         env:
           COMMAND: ${{ inputs.deploy_command }}
-        run: $COMMAND epreprod promoted-artifact
+          APPLICATION_URL: ${{ vars.APPLICATION_URL }}
+        run: |
+          set -euo pipefail
+          $COMMAND epreprod promoted-artifact
+          if [[ -n "$APPLICATION_URL" ]]; then
+            echo "application_url=${APPLICATION_URL%/}" >> "$GITHUB_OUTPUT"
+          fi
 
   preprod_integration:
     name: ePreProd Integration Tests
@@ -537,7 +715,8 @@ jobs:
         shell: bash
         env:
           COMMAND: ${{ inputs.integration_test_command }}
-        run: $COMMAND epreprod
+          APPLICATION_URL: ${{ needs.deploy_epreprod.outputs.application_url }}
+        run: $COMMAND epreprod "$APPLICATION_URL"
       - name: Upload integration evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -557,7 +736,8 @@ jobs:
         shell: bash
         env:
           COMMAND: ${{ inputs.regression_test_command }}
-        run: $COMMAND epreprod
+          APPLICATION_URL: ${{ needs.deploy_epreprod.outputs.application_url }}
+        run: $COMMAND epreprod "$APPLICATION_URL"
       - name: Upload regression evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -582,7 +762,14 @@ jobs:
         shell: bash
         env:
           COMMAND: ${{ inputs.smoke_test_command }}
-        run: $COMMAND epreprod promoted-artifact
+          APPLICATION_URL: ${{ needs.deploy_epreprod.outputs.application_url }}
+          ARTIFACT_TYPE: ${{ inputs.artifact_type }}
+        run: |
+          if [[ "$ARTIFACT_TYPE" == "container" ]]; then
+            $COMMAND epreprod "$APPLICATION_URL"
+          else
+            $COMMAND epreprod promoted-artifact
+          fi
 
   preprod_dast:
     name: ePreProd DAST Policy Validation
@@ -647,6 +834,7 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
           VERIFY_COMMAND: ${{ inputs.production_verify_command }}
+          APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
         run: |
           if [[ "$DEPLOY_RESULT" != "success" || "$SMOKE_RESULT" != "success" ]]; then
             echo "::error::Production deployment or smoke testing failed."
@@ -654,7 +842,7 @@ jobs:
           fi
 
           if [[ -n "$VERIFY_COMMAND" ]]; then
-            $VERIFY_COMMAND
+            $VERIFY_COMMAND "$APPLICATION_URL"
           fi
 
           echo "Production Verification passed."

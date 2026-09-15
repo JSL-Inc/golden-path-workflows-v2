@@ -19,6 +19,7 @@ jobs:
   warning:
     name: Warning Period Notice
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - name: Check results and post warning-period notice
         continue-on-error: true
@@ -123,8 +124,38 @@ jobs:
               );
             };
 
-            const checkRuns = await getResults();
             const isRunning = (check) => check.status !== 'completed';
+            const findMatches = (checks, target) => checks.filter((check) =>
+              matchesAlias(check.name, target.aliases),
+            );
+
+            let checkRuns = [];
+
+            // Reusable workflows start alongside the other PR workflows. Wait until
+            // every Golden Path check exists and has finished before reporting.
+            for (let attempt = 1; attempt <= 40; attempt += 1) {
+              checkRuns = await getResults();
+              const requiredMatches = requiredChecks.map((target) =>
+                findMatches(checkRuns, target),
+              );
+              const rulesetMatches = rulesetChecks.flatMap((target) =>
+                findMatches(checkRuns, target),
+              );
+              const allPresent = requiredMatches.every((matches) => matches.length > 0);
+              const allFinished = requiredMatches.every((matches) =>
+                matches.length > 0 && matches.every((check) => !isRunning(check)),
+              );
+              const rulesetsFinished = rulesetMatches.every((check) => !isRunning(check));
+
+              if (attempt >= 3 && allPresent && allFinished && rulesetsFinished) {
+                break;
+              }
+
+              core.info(`Waiting for Golden Path checks (${attempt}/40).`);
+              if (attempt < 40) {
+                await new Promise((resolve) => setTimeout(resolve, 15000));
+              }
+            }
 
             const failureConclusions = new Set([
               'action_required',
@@ -136,9 +167,7 @@ jobs:
             ]);
 
             const results = targets.map((target) => {
-              const matches = checkRuns.filter((check) =>
-                matchesAlias(check.name, target.aliases),
-              );
+              const matches = findMatches(checkRuns, target);
 
               if (matches.length === 0) {
                 return {

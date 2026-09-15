@@ -1,20 +1,12 @@
 name: Golden Path Warning Period
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-  workflow_run:
-    workflows:
-      - Golden Path CI
-      - Golden Path CD
-      - Branch Validation
-      - PR Flow
-      - Code Coverage
-      - CodeQL
-      - FOSSA
-    types: [completed]
 
 permissions:
+  checks: read
   contents: read
   pull-requests: write
 
@@ -22,100 +14,209 @@ jobs:
   warning:
     name: Warning Period Notice
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Post warning-period notice
+      - name: Check results and post warning-period notice
         continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
             const marker = '<!-- golden-path-warning-period -->';
-            const body = `${marker}
-            ## Golden Path warning period
-
-            The following checks are currently **informational**. They do not block this pull request during the warning period, but they are planned to become required and blocking.
-
-            **Golden Path checks**
-            - Standard CI
-            - INT Gate
-            - ePreProd Gate
-            - Branch Name
-            - Branch Flow
-            - QA Gate
-
-            **Repository ruleset and security checks**
-            - Code coverage
-            - Code scanning
-            - Code quality
-            - Secret scanning
-            - FOSSA scan *(not currently implemented)*
-
-            Use this warning period to resolve failures and configure missing checks before enforcement begins.`;
-
-            const { owner, repo } = context.repo;
-            let pullRequests = [];
-
-            if (context.eventName === 'pull_request') {
-              pullRequests = [context.payload.pull_request];
-            } else {
-              pullRequests = context.payload.workflow_run.pull_requests ?? [];
-
-              if (pullRequests.length === 0) {
-                const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                  owner,
-                  repo,
-                  commit_sha: context.payload.workflow_run.head_sha,
-                });
-                pullRequests = associated.data;
-              }
-            }
-
-            const pullRequestNumbers = [
-              ...new Set(
-                pullRequests
-                  .map((pullRequest) => pullRequest.number),
-              ),
+            const targets = [
+              { name: 'Standard CI', aliases: ['Standard CI'] },
+              { name: 'INT Gate', aliases: ['INT Gate'] },
+              { name: 'Preprod Gate', aliases: ['ePreProd Gate', 'Preprod Gate'] },
+              { name: 'Branch Naming', aliases: ['Branch Name', 'Branch Naming'] },
+              { name: 'PR Flow', aliases: ['Branch Flow', 'PR Flow'] },
+              { name: 'QA Gate', aliases: ['QA Gate'] },
+              { name: 'Code Coverage', aliases: ['Coverage 80%', 'Code Coverage'] },
+              { name: 'Code Scanning', aliases: ['CodeQL', 'Code Scanning'] },
+              {
+                name: 'Code Quality',
+                aliases: ['Code Quality', 'Build and Quality Checks'],
+              },
+              { name: 'Secret Scanning', aliases: ['Secret Scanning'] },
+              { name: 'FOSSA Scan', aliases: ['FOSSA', 'FOSSA Scan'] },
             ];
 
-            if (pullRequestNumbers.length === 0) {
-              core.info('No open pull request is associated with this workflow run.');
+            const { owner, repo } = context.repo;
+            let pullRequest = context.payload.pull_request;
+
+            if (!pullRequest) {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: context.sha,
+              });
+              pullRequest = associated.data.find((candidate) => candidate.state === 'open');
+            }
+
+            if (!pullRequest) {
+              core.warning('No open pull request is associated with this workflow run.');
               return;
             }
 
-            for (const issue_number of pullRequestNumbers) {
-              const { data: pullRequest } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: issue_number,
+            const headSha = pullRequest.head.sha;
+            const normalize = (value) => value.trim().toLowerCase();
+            const matchesAlias = (checkName, aliases) => {
+              const normalizedName = normalize(checkName);
+              return aliases.some((alias) => {
+                const normalizedAlias = normalize(alias);
+                return normalizedName === normalizedAlias ||
+                  normalizedName.endsWith(` / ${normalizedAlias}`);
               });
+            };
 
-              if (pullRequest.state !== 'open') {
-                core.info(`Skipping closed PR #${issue_number}.`);
-                continue;
-              }
-
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner,
-                repo,
-                issue_number,
-                per_page: 100,
-              });
-              const existing = comments.find((comment) => comment.body?.includes(marker));
-
-              if (existing) {
-                await github.rest.issues.updateComment({
+            const getCheckRuns = async () => {
+              const response = await github.paginate(
+                github.rest.checks.listForRef,
+                {
                   owner,
                   repo,
-                  comment_id: existing.id,
-                  body,
-                });
-                core.info(`Updated warning-period notice on PR #${issue_number}.`);
-              } else {
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number,
-                  body,
-                });
-                core.info(`Posted warning-period notice on PR #${issue_number}.`);
+                  ref: headSha,
+                  filter: 'latest',
+                  per_page: 100,
+                },
+              );
+
+              return response.filter((check) =>
+                !normalize(check.name).includes('warning period notice'),
+              );
+            };
+
+            // Give the other PR workflows time to create their check runs.
+            await new Promise((resolve) => setTimeout(resolve, 30000));
+
+            let checkRuns = await getCheckRuns();
+            const deadline = Date.now() + (10 * 60 * 1000);
+            const isRunning = (check) => check.status !== 'completed';
+
+            while (Date.now() < deadline) {
+              const relevantChecks = checkRuns.filter((check) =>
+                targets.some((target) => matchesAlias(check.name, target.aliases)),
+              );
+
+              if (!relevantChecks.some(isRunning)) {
+                break;
               }
+
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+              checkRuns = await getCheckRuns();
+            }
+
+            const failureConclusions = new Set([
+              'action_required',
+              'cancelled',
+              'failure',
+              'startup_failure',
+              'stale',
+              'timed_out',
+            ]);
+
+            const results = targets.map((target) => {
+              const matches = checkRuns.filter((check) =>
+                matchesAlias(check.name, target.aliases),
+              );
+
+              if (matches.length === 0) {
+                return {
+                  ...target,
+                  state: 'missing',
+                  result: '➖ Not found or not configured',
+                  details: target.name === 'FOSSA Scan'
+                    ? 'Not currently implemented'
+                    : 'No matching check run found',
+                };
+              }
+
+              const failing = matches.filter((check) =>
+                failureConclusions.has(check.conclusion),
+              );
+              const running = matches.filter(isRunning);
+              const successful = matches.filter((check) => check.conclusion === 'success');
+
+              if (failing.length > 0) {
+                return {
+                  ...target,
+                  state: 'failing',
+                  result: '❌ Failing',
+                  details: failing.map((check) => check.name).join(', '),
+                };
+              }
+
+              if (running.length > 0) {
+                return {
+                  ...target,
+                  state: 'pending',
+                  result: '⏳ Pending',
+                  details: running.map((check) => check.name).join(', '),
+                };
+              }
+
+              if (successful.length > 0) {
+                return {
+                  ...target,
+                  state: 'passing',
+                  result: '✅ Passing',
+                  details: successful.map((check) => check.name).join(', '),
+                };
+              }
+
+              return {
+                ...target,
+                state: 'skipped',
+                result: '⚪ Skipped or neutral',
+                details: matches.map((check) => check.name).join(', '),
+              };
+            });
+
+            const failing = results.filter((result) => result.state === 'failing');
+            const pending = results.filter((result) => result.state === 'pending');
+            const summary = failing.length > 0
+              ? `The following future required checks are currently failing: **${failing.map((result) => result.name).join(', ')}**.`
+              : pending.length > 0
+                ? 'No completed check is currently failing, but one or more checks are still pending.'
+                : 'No reported check is currently failing.';
+
+            const rows = results.map((result) =>
+              `| ${result.name} | ${result.result} | ${result.details} |`,
+            ).join('\n');
+
+            const body = `${marker}
+            ## Golden Path warning period
+
+            ${summary}
+
+            These checks are currently **informational** and do not block this pull request during the warning period. After the warning period, configured required checks will become blocking.
+
+            | Check | Current result | Matched check run |
+            |---|---|---|
+            ${rows}
+
+            _Results for commit \`${headSha.slice(0, 7)}\`._`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pullRequest.number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated warning-period results on PR #${pullRequest.number}.`);
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                body,
+              });
+              core.info(`Posted warning-period results on PR #${pullRequest.number}.`);
             }

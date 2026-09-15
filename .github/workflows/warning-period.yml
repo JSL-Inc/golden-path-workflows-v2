@@ -1,9 +1,9 @@
 name: Golden Path Warning Period
 
 on:
+  workflow_call:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-  workflow_call:
 
 permissions:
   checks: read
@@ -12,7 +12,7 @@ permissions:
   statuses: read
 
 concurrency:
-  group: warning-period-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
+  group: warning-period-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -50,31 +50,25 @@ jobs:
             let pullRequest = context.payload.pull_request;
 
             if (!pullRequest) {
-              const workflowRun = context.payload.workflow_run;
-              const runPullRequest = workflowRun.pull_requests?.[0];
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: context.sha,
+              });
+              const candidate = associated.data.find((item) => item.state === 'open');
 
-              if (runPullRequest) {
+              if (candidate) {
                 const response = await github.rest.pulls.get({
                   owner,
                   repo,
-                  pull_number: runPullRequest.number,
+                  pull_number: candidate.number,
                 });
                 pullRequest = response.data;
               }
             }
 
             if (!pullRequest) {
-              const headSha = context.payload.workflow_run.head_sha;
-              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner,
-                repo,
-                commit_sha: headSha,
-              });
-              pullRequest = associated.data.find((candidate) => candidate.state === 'open');
-            }
-
-            if (!pullRequest) {
-              core.warning('No open pull request is associated with this workflow run.');
+              core.warning('No open pull request is associated with this invocation.');
               return;
             }
 

@@ -11,6 +11,10 @@ permissions:
   pull-requests: write
   statuses: read
 
+concurrency:
+  group: warning-period-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   warning:
     name: Warning Period Notice

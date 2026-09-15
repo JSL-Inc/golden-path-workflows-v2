@@ -9,6 +9,7 @@ permissions:
   checks: read
   contents: read
   pull-requests: write
+  statuses: read
 
 jobs:
   warning:
@@ -68,7 +69,7 @@ jobs:
             };
 
             const getCheckRuns = async () => {
-              const response = await github.paginate(
+              const checks = await github.paginate(
                 github.rest.checks.listForRef,
                 {
                   owner,
@@ -79,7 +80,30 @@ jobs:
                 },
               );
 
-              return response.filter((check) =>
+              const { data: combinedStatus } =
+                await github.rest.repos.getCombinedStatusForRef({
+                  owner,
+                  repo,
+                  ref: headSha,
+                  per_page: 100,
+                });
+              const latestStatuses = new Map();
+
+              for (const status of combinedStatus.statuses) {
+                if (!latestStatuses.has(status.context)) {
+                  latestStatuses.set(status.context, {
+                    name: status.context,
+                    status: status.state === 'pending' ? 'in_progress' : 'completed',
+                    conclusion: status.state === 'success'
+                      ? 'success'
+                      : status.state === 'pending'
+                        ? null
+                        : 'failure',
+                  });
+                }
+              }
+
+              return [...checks, ...latestStatuses.values()].filter((check) =>
                 !normalize(check.name).includes('warning period notice'),
               );
             };
@@ -189,7 +213,7 @@ jobs:
 
             These checks are currently **informational** and do not block this pull request during the warning period. After the warning period, configured required checks will become blocking.
 
-            | Check | Current result | Matched check run |
+            | Check | Current result | Matched result |
             |---|---|---|
             ${rows}
 

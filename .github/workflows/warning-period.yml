@@ -1,9 +1,22 @@
 name: Golden Path Warning Period
 
 on:
-  workflow_call:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
+  workflow_run:
+    workflows:
+      - Golden Path CI
+      - Golden Path CD
+      - Branch Validation
+      - PR Flow
+      - Code Coverage
+      - Code Scanning
+      - CodeQL
+      - Code Quality
+      - Secret Scanning
+      - FOSSA
+      - FOSSA Scan
+    types: [completed]
 
 permissions:
   checks: read
@@ -12,14 +25,13 @@ permissions:
   statuses: read
 
 concurrency:
-  group: warning-period-${{ github.event.pull_request.number || github.ref }}
+  group: warning-period-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
   warning:
     name: Warning Period Notice
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - name: Check results and post warning-period notice
         continue-on-error: true
@@ -27,13 +39,15 @@ jobs:
         with:
           script: |
             const marker = '<!-- golden-path-warning-period -->';
-            const targets = [
+            const requiredChecks = [
               { name: 'Standard CI', aliases: ['Standard CI'] },
               { name: 'INT Gate', aliases: ['INT Gate'] },
               { name: 'Preprod Gate', aliases: ['ePreProd Gate', 'Preprod Gate'] },
               { name: 'Branch Naming', aliases: ['Branch Name', 'Branch Naming'] },
               { name: 'PR Flow', aliases: ['Branch Flow', 'PR Flow'] },
               { name: 'QA Gate', aliases: ['QA Gate'] },
+            ];
+            const rulesetChecks = [
               { name: 'Code Coverage', aliases: ['Coverage 80%', 'Code Coverage'] },
               { name: 'Code Scanning', aliases: ['CodeQL', 'Code Scanning'] },
               {
@@ -43,15 +57,31 @@ jobs:
               { name: 'Secret Scanning', aliases: ['Secret Scanning'] },
               { name: 'FOSSA Scan', aliases: ['FOSSA', 'FOSSA Scan'] },
             ];
+            const targets = [...requiredChecks, ...rulesetChecks];
 
             const { owner, repo } = context.repo;
             let pullRequest = context.payload.pull_request;
 
             if (!pullRequest) {
+              const workflowRun = context.payload.workflow_run;
+              const runPullRequest = workflowRun.pull_requests?.[0];
+
+              if (runPullRequest) {
+                const response = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: runPullRequest.number,
+                });
+                pullRequest = response.data;
+              }
+            }
+
+            if (!pullRequest) {
+              const headSha = context.payload.workflow_run.head_sha;
               const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                 owner,
                 repo,
-                commit_sha: context.sha,
+                commit_sha: headSha,
               });
               pullRequest = associated.data.find((candidate) => candidate.state === 'open');
             }
@@ -72,7 +102,7 @@ jobs:
               });
             };
 
-            const getCheckRuns = async () => {
+            const getResults = async () => {
               const checks = await github.paginate(
                 github.rest.checks.listForRef,
                 {
@@ -112,25 +142,8 @@ jobs:
               );
             };
 
-            // Give the other PR workflows time to create their check runs.
-            await new Promise((resolve) => setTimeout(resolve, 30000));
-
-            let checkRuns = await getCheckRuns();
-            const deadline = Date.now() + (10 * 60 * 1000);
+            const checkRuns = await getResults();
             const isRunning = (check) => check.status !== 'completed';
-
-            while (Date.now() < deadline) {
-              const relevantChecks = checkRuns.filter((check) =>
-                targets.some((target) => matchesAlias(check.name, target.aliases)),
-              );
-
-              if (!relevantChecks.some(isRunning)) {
-                break;
-              }
-
-              await new Promise((resolve) => setTimeout(resolve, 15000));
-              checkRuns = await getCheckRuns();
-            }
 
             const failureConclusions = new Set([
               'action_required',

@@ -3,20 +3,7 @@ name: Golden Path Warning Period
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
-  workflow_run:
-    workflows:
-      - Golden Path CI
-      - Golden Path CD
-      - Branch Validation
-      - PR Flow
-      - Code Coverage
-      - Code Scanning
-      - CodeQL
-      - Code Quality
-      - Secret Scanning
-      - FOSSA
-      - FOSSA Scan
-    types: [completed]
+  workflow_call:
 
 permissions:
   checks: read

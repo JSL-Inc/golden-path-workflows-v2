@@ -75,6 +75,11 @@ on:
         required: false
         type: string
         default: ""
+      container_build_command:
+        description: Optional container build command; writes digest=sha256:... to GITHUB_OUTPUT
+        required: false
+        type: string
+        default: ""
       dockerfile:
         description: Dockerfile used to build the deployable image
         required: false
@@ -217,7 +222,7 @@ jobs:
           esac
 
           echo "registry_server=$registry_server" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${registry_server}/${IMAGE_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${registry_server}/${IMAGE_REPOSITORY}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Azure with OIDC
         if: inputs.artifact_type == 'container' && inputs.registry_provider == 'acr' && inputs.publish_artifact && github.event_name == 'push'
@@ -249,12 +254,12 @@ jobs:
           $COMMAND
 
       - name: Set up Docker Buildx
-        if: inputs.artifact_type == 'container'
+        if: inputs.artifact_type == 'container' && inputs.container_build_command == ''
         uses: docker/setup-buildx-action@v3
 
       - name: Build container image
         id: container_build
-        if: inputs.artifact_type == 'container'
+        if: inputs.artifact_type == 'container' && inputs.container_build_command == ''
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.build_context }}
@@ -264,12 +269,27 @@ jobs:
           provenance: true
           sbom: true
 
+      - name: Build container with application command
+        id: container_custom_build
+        if: inputs.artifact_type == 'container' && inputs.container_build_command != '' && inputs.publish_artifact && github.event_name == 'push'
+        shell: bash
+        env:
+          COMMAND: ${{ inputs.container_build_command }}
+          IMAGE_TAG: ${{ steps.container.outputs.image_tag }}
+          PACK_IMAGE: ${{ vars.PACK_IMAGE }}
+          PAKETO_BUILDER_IMAGE: ${{ vars.PAKETO_BUILDER_IMAGE }}
+          PAKETO_RUN_IMAGE: ${{ vars.PAKETO_RUN_IMAGE }}
+          ACR_NAME: ${{ inputs.acr_name }}
+        run: |
+          set -euo pipefail
+          $COMMAND
+
       - name: Create immutable deployment descriptor
         if: inputs.artifact_type == 'container' && inputs.publish_artifact && github.event_name == 'push'
         shell: bash
         env:
           IMAGE_TAG: ${{ steps.container.outputs.image_tag }}
-          IMAGE_DIGEST: ${{ steps.container_build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.container_build.outputs.digest || steps.container_custom_build.outputs.digest }}
           REGISTRY_PROVIDER: ${{ inputs.registry_provider }}
         run: |
           set -euo pipefail
@@ -360,7 +380,7 @@ jobs:
             fi
 
             if [[ "$ARTIFACT_TYPE" == "container" ]]; then
-              echo "| Container build | $(result '${{ steps.container_build.outcome }}') |"
+              echo "| Container build | $(result '${{ steps.container_custom_build.outcome || steps.container_build.outcome }}') |"
             fi
 
             if [[ "$PUBLISH_ARTIFACT" == "true" && "${{ github.event_name }}" == "push" ]]; then

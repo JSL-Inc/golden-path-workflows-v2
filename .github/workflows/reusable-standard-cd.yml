@@ -29,7 +29,7 @@ on:
         type: string
         default: custom
       deploy_command:
-        description: Deployment command; ACA receives stage/promote, environment, and artifact directory; custom receives environment and artifact directory
+        description: Deployment command; receives environment and artifact directory
         required: false
         type: string
         default: bash scripts/deploy.sh
@@ -435,7 +435,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Stage immutable image in Azure Container Apps
+      - name: Deploy image to Azure Container Apps
         id: deploy_aca
         if: inputs.deployment_provider == 'azure-container-apps'
         shell: bash
@@ -443,10 +443,16 @@ jobs:
           COMMAND: ${{ inputs.deploy_command }}
           AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          ACA_ENVIRONMENT: ${{ vars.ACA_ENVIRONMENT }}
+          ACA_UAMI_RESOURCE_ID: ${{ vars.ACA_UAMI_RESOURCE_ID }}
+          ACA_CPU: ${{ vars.ACA_CPU }}
+          ACA_MEMORY: ${{ vars.ACA_MEMORY }}
+          ACA_TARGET_PORT: ${{ vars.ACA_TARGET_PORT }}
+          ACA_STARTUP_COMMAND: ${{ vars.ACA_STARTUP_COMMAND }}
           ENVIRONMENT: ${{ needs.route.outputs.environment }}
         run: |
           set -euo pipefail
-          $COMMAND stage "$ENVIRONMENT" promoted-artifact
+          $COMMAND "$ENVIRONMENT" promoted-artifact
 
       - name: Run custom deployment adapter
         id: deploy_custom
@@ -602,52 +608,13 @@ jobs:
           fi
           echo "QA Gate passed."
 
-  promote:
-    name: Promote ${{ needs.route.outputs.environment }}
-    needs: [route, artifact, int_gate, qa_gate, smoke]
-    if: >-
-      always() && inputs.deployment_provider == 'azure-container-apps' &&
-      ((needs.route.outputs.branch_type == 'feature' && needs.int_gate.result == 'success') ||
-       ((needs.route.outputs.branch_type == 'release' || needs.route.outputs.branch_type == 'hotfix') && needs.qa_gate.result == 'success') ||
-       (needs.route.outputs.branch_type == 'main' && needs.smoke.result == 'success'))
-    runs-on: ubuntu-latest
-    outputs:
-      application_url: ${{ steps.promote.outputs.application_url }}
-    environment:
-      name: ${{ needs.route.outputs.environment }}
-    concurrency:
-      group: environment-${{ github.repository }}-${{ needs.route.outputs.environment }}
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.artifact_name }}
-          path: promoted-artifact
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Promote tested ACA revision
-        id: promote
-        shell: bash
-        env:
-          COMMAND: ${{ inputs.deploy_command }}
-          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
-          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          ENVIRONMENT: ${{ needs.route.outputs.environment }}
-        run: |
-          set -euo pipefail
-          $COMMAND promote "$ENVIRONMENT" promoted-artifact
 
   deploy_epreprod:
     name: Deploy ePreProd
-    needs: [route, artifact, qa_gate, promote]
+    needs: [route, artifact, qa_gate]
     if: >-
       always() && needs.route.outputs.use_epreprod == 'true' &&
-      needs.qa_gate.result == 'success' &&
-      (inputs.deployment_provider != 'azure-container-apps' || needs.promote.result == 'success')
+      needs.qa_gate.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       application_url: ${{ steps.deploy_aca.outputs.application_url || steps.deploy_custom.outputs.application_url }}
@@ -672,7 +639,7 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Stage immutable image in Azure Container Apps
+      - name: Deploy image to Azure Container Apps
         id: deploy_aca
         if: inputs.deployment_provider == 'azure-container-apps'
         shell: bash
@@ -680,10 +647,16 @@ jobs:
           COMMAND: ${{ inputs.deploy_command }}
           AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
           AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          ACA_ENVIRONMENT: ${{ vars.ACA_ENVIRONMENT }}
+          ACA_UAMI_RESOURCE_ID: ${{ vars.ACA_UAMI_RESOURCE_ID }}
+          ACA_CPU: ${{ vars.ACA_CPU }}
+          ACA_MEMORY: ${{ vars.ACA_MEMORY }}
+          ACA_TARGET_PORT: ${{ vars.ACA_TARGET_PORT }}
+          ACA_STARTUP_COMMAND: ${{ vars.ACA_STARTUP_COMMAND }}
           ENVIRONMENT: epreprod
         run: |
           set -euo pipefail
-          $COMMAND stage "$ENVIRONMENT" promoted-artifact
+          $COMMAND "$ENVIRONMENT" promoted-artifact
 
       - name: Run custom deployment adapter
         id: deploy_custom
@@ -816,44 +789,10 @@ jobs:
           fi
           echo "ePreProd Gate passed."
 
-  promote_epreprod:
-    name: Promote epreprod
-    needs: [route, artifact, preprod_gate]
-    if: >-
-      always() && inputs.deployment_provider == 'azure-container-apps' &&
-      needs.route.outputs.use_epreprod == 'true' && needs.preprod_gate.result == 'success'
-    runs-on: ubuntu-latest
-    environment:
-      name: epreprod
-    concurrency:
-      group: environment-${{ github.repository }}-epreprod
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ inputs.artifact_name }}
-          path: promoted-artifact
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Promote tested ACA revision
-        id: promote
-        shell: bash
-        env:
-          COMMAND: ${{ inputs.deploy_command }}
-          AZURE_CONTAINER_APP_NAME: ${{ vars.AZURE_CONTAINER_APP_NAME }}
-          AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-          ENVIRONMENT: epreprod
-        run: |
-          set -euo pipefail
-          $COMMAND promote "$ENVIRONMENT" promoted-artifact
 
   production_verification:
     name: Production Verification
-    needs: [route, deploy, smoke, promote]
+    needs: [route, deploy, smoke]
     if: always() && needs.route.outputs.branch_type == 'main'
     runs-on: ubuntu-latest
     steps:
@@ -863,18 +802,11 @@ jobs:
         env:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
-          PROMOTE_RESULT: ${{ needs.promote.result }}
-          PROVIDER: ${{ inputs.deployment_provider }}
           VERIFY_COMMAND: ${{ inputs.production_verify_command }}
-          APPLICATION_URL: ${{ needs.promote.outputs.application_url || needs.deploy.outputs.application_url }}
+          APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
         run: |
           if [[ "$DEPLOY_RESULT" != "success" || "$SMOKE_RESULT" != "success" ]]; then
             echo "::error::Production deployment or smoke testing failed."
-            exit 1
-          fi
-
-          if [[ "$PROVIDER" == "azure-container-apps" && "$PROMOTE_RESULT" != "success" ]]; then
-            echo "::error::ACA production promotion failed."
             exit 1
           fi
 
@@ -886,7 +818,7 @@ jobs:
 
   release_readiness:
     name: Release Readiness
-    needs: [route, qa_gate, preprod_gate, promote, promote_epreprod]
+    needs: [route, qa_gate, preprod_gate]
     if: >-
       always() &&
       (needs.route.outputs.branch_type == 'release' ||
@@ -899,9 +831,6 @@ jobs:
           USE_EPREPROD: ${{ needs.route.outputs.use_epreprod }}
           QA_GATE_RESULT: ${{ needs.qa_gate.result }}
           PREPROD_GATE_RESULT: ${{ needs.preprod_gate.result }}
-          PROMOTE_RESULT: ${{ needs.promote.result }}
-          PREPROD_PROMOTE_RESULT: ${{ needs.promote_epreprod.result }}
-          PROVIDER: ${{ inputs.deployment_provider }}
         run: |
           if [[ "$QA_GATE_RESULT" != "success" ]]; then
             echo "::error::The EQA deployment and QA Gate must pass."
@@ -910,13 +839,6 @@ jobs:
 
           if [[ "$USE_EPREPROD" == "true" && "$PREPROD_GATE_RESULT" != "success" ]]; then
             echo "::error::This release requires a successful ePreProd Gate."
-            exit 1
-          fi
-
-          if [[ "$PROVIDER" == "azure-container-apps" &&
-                ( "$PROMOTE_RESULT" != "success" ||
-                  ( "$USE_EPREPROD" == "true" && "$PREPROD_PROMOTE_RESULT" != "success" ) ) ]]; then
-            echo "::error::ACA revision promotion did not complete."
             exit 1
           fi
 

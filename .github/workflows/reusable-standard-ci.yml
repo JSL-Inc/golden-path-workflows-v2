@@ -56,7 +56,7 @@ on:
         type: string
         default: dist/**
       registry_provider:
-        description: Container registry provider; acr uses Azure OIDC and custom uses the custom registry settings
+        description: Container registry provider; acr uses an Azure service principal and custom uses the custom registry settings
         required: false
         type: string
         default: acr
@@ -103,7 +103,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
   code-quality: write
 
 jobs:
@@ -224,13 +223,11 @@ jobs:
           echo "registry_server=$registry_server" >> "$GITHUB_OUTPUT"
           echo "image_tag=${registry_server}/${IMAGE_REPOSITORY}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to Azure with OIDC
+      - name: Log in to Azure with service principal
         if: inputs.artifact_type == 'container' && inputs.registry_provider == 'acr' && inputs.publish_artifact && github.event_name == 'push'
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Log in to Azure Container Registry
         if: inputs.artifact_type == 'container' && inputs.registry_provider == 'acr' && inputs.publish_artifact && github.event_name == 'push'

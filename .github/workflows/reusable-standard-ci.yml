@@ -70,6 +70,21 @@ on:
         required: false
         type: string
         default: ""
+      pack_image:
+        description: Approved pack CLI image passed to the application container build command
+        required: false
+        type: string
+        default: ""
+      paketo_builder_image:
+        description: Approved Paketo builder image passed to the application container build command
+        required: false
+        type: string
+        default: ""
+      paketo_run_image:
+        description: Optional Paketo run image override; blank uses the builder default
+        required: false
+        type: string
+        default: ""
       dockerfile:
         description: Dockerfile used to build the deployable image
         required: false
@@ -226,9 +241,9 @@ jobs:
         env:
           COMMAND: ${{ inputs.container_build_command }}
           IMAGE_TAG: ${{ steps.container.outputs.image_tag }}
-          PACK_IMAGE: ${{ vars.PACK_IMAGE }}
-          PAKETO_BUILDER_IMAGE: ${{ vars.PAKETO_BUILDER_IMAGE }}
-          PAKETO_RUN_IMAGE: ${{ vars.PAKETO_RUN_IMAGE }}
+          PACK_IMAGE: ${{ inputs.pack_image }}
+          PAKETO_BUILDER_IMAGE: ${{ inputs.paketo_builder_image }}
+          PAKETO_RUN_IMAGE: ${{ inputs.paketo_run_image }}
           ACR_NAME: ${{ inputs.acr_name }}
         run: |
           set -euo pipefail

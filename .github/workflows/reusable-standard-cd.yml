@@ -60,6 +60,7 @@ on:
         default: .zap/rules.tsv
 
 permissions:
+  id-token: write
   actions: read
   contents: write
   pull-requests: read
@@ -426,11 +427,13 @@ jobs:
               ;;
           esac
 
-      - name: Log in to Azure with service principal
+      - name: Log in to Azure with federated service principal
         if: inputs.deployment_provider == 'azure-container-apps'
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy image to Azure Container Apps
         id: deploy_aca
@@ -628,11 +631,13 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: promoted-artifact
 
-      - name: Log in to Azure with service principal
+      - name: Log in to Azure with federated service principal
         if: inputs.deployment_provider == 'azure-container-apps'
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy image to Azure Container Apps
         id: deploy_aca

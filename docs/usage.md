@@ -91,16 +91,37 @@ Optional environment variables `ACA_CPU`, `ACA_MEMORY`, `ACA_TARGET_PORT`,
 and `ACA_STARTUP_COMMAND` default to `0.5`, `1Gi`, `8080`, and
 `/cnb/process/web`. The custom deployment command provider remains available.
 
-Azure login uses service principal JSON in `AZURE_CREDENTIALS` with
-`clientId`, `clientSecret`, `tenantId`, and `subscriptionId`. Store it as an
-application repository secret for CI and as an environment secret for each CD
-target, and use `secrets: inherit` in the callers. Use the ACR subscription ID
-for CI and the target ACA subscription ID for CD. The environment secret takes
-precedence; if absent, the repository credential can be used instead.
-CI needs ACR push/pull access, while the app's managed identity needs pull
-access. The CD principal manages target apps and must be allowed to assign the
-configured user-assigned identity. Do not commit credentials. No OIDC
-`id-token: write` permission is needed for this service principal secret login.
+Azure login uses a service principal with GitHub OIDC federation, matching
+the GitLab federated-token approach. Store these three Actions secrets in the
+application repository for CI: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and
+`AZURE_SUBSCRIPTION_ID`. Set the same secret names in each deployment
+environment (`eint1`–`eint6`, `eqa`, `epreprod`, `prod`) for CD. Use
+the ACR subscription ID for CI and the target ACA subscription ID for CD.
+Environment secrets override repository secrets; set all three explicitly
+for each target to avoid falling back to CI values.
+
+No client secret or `AZURE_CREDENTIALS` JSON is used. Both callers and reusable
+workflows grant `id-token: write` and callers use `secrets: inherit`.
+`azure/login@v2` requests the temporary token and exchanges it with Azure.
+The subsequent `az acr login --name "$ACR_NAME"` in CI authenticates Docker
+to ACR using that Azure session.
+
+The cloud team must configure the service principal's Azure federated
+credentials to trust the application/caller repository, not just this shared
+workflow repository. The issuer is `https://token.actions.githubusercontent.com`
+and the audience is `api://AzureADTokenExchange`. CI has no GitHub environment,
+so its publishing push jobs use branch-based subjects: configure trust for
+the permitted feature, release, and hotfix branches, using exact credentials
+or an approved flexible credential. CD uses the selected GitHub environment's
+subject, including a separate `epreprod` deployment job. Match the actual
+OIDC subject format emitted by the repository, including immutable repository
+and owner IDs if enabled. Environment deployment rules should restrict which
+branches can deploy to each target. This repository change does not create
+Azure federated credentials or assign Azure permissions.
+
+CI needs ACR push/pull access; ACA's managed identity needs pull access.
+The CD principal needs target app management and permission to assign the
+configured user-assigned identity. Never commit identity values or tokens.
 
 ## Promotion model
 
@@ -112,6 +133,6 @@ verifies the same package or image digest, and then creates the release.
 
 ## POC pinning
 
-The ACA sandbox CI and CD callers use `@v1.0.3a`.
+The ACA sandbox CI and CD callers use `@v1.0.4a`.
 Before production adoption, tag this repository and pin every caller to an
 immutable version or commit SHA.

@@ -102,6 +102,7 @@ on:
         default: 14
 
 permissions:
+  id-token: write
   contents: read
   code-quality: write
 
@@ -205,11 +206,13 @@ jobs:
           echo "registry_server=$registry_server" >> "$GITHUB_OUTPUT"
           echo "image_tag=${registry_server}/${IMAGE_REPOSITORY}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to Azure with service principal
+      - name: Log in to Azure with federated service principal
         if: inputs.artifact_type == 'container' && inputs.publish_artifact && github.event_name == 'push'
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Log in to Azure Container Registry
         if: inputs.artifact_type == 'container' && inputs.publish_artifact && github.event_name == 'push'

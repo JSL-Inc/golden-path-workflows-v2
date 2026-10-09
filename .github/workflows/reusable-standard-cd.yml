@@ -429,11 +429,28 @@ jobs:
 
       - name: Log in to Azure with federated service principal
         if: inputs.deployment_provider == 'azure-container-apps'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          : "${AZURE_CLIENT_ID:?Set AZURE_CLIENT_ID}"
+          : "${AZURE_TENANT_ID:?Set AZURE_TENANT_ID}"
+          : "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID}"
+
+          OIDC_TOKEN="$(curl --fail --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+            | jq -er '.value // empty')"
+          echo "::add-mask::$OIDC_TOKEN"
+
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --tenant "$AZURE_TENANT_ID" \
+            --federated-token "$OIDC_TOKEN" --output none
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 
       - name: Deploy image to Azure Container Apps
         id: deploy_aca
@@ -633,11 +650,28 @@ jobs:
 
       - name: Log in to Azure with federated service principal
         if: inputs.deployment_provider == 'azure-container-apps'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          : "${AZURE_CLIENT_ID:?Set AZURE_CLIENT_ID}"
+          : "${AZURE_TENANT_ID:?Set AZURE_TENANT_ID}"
+          : "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID}"
+
+          OIDC_TOKEN="$(curl --fail --silent --show-error \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
+            | jq -er '.value // empty')"
+          echo "::add-mask::$OIDC_TOKEN"
+
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --tenant "$AZURE_TENANT_ID" \
+            --federated-token "$OIDC_TOKEN" --output none
+          az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 
       - name: Deploy image to Azure Container Apps
         id: deploy_aca

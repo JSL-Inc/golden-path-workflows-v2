@@ -102,7 +102,13 @@ for each target to avoid falling back to CI values.
 
 No client secret or `AZURE_CREDENTIALS` JSON is used. Both callers and reusable
 workflows grant `id-token: write` and callers use `secrets: inherit`.
-`azure/login@v2` requests the temporary token and exchanges it with Azure.
+The inline Bash login requests a temporary OIDC token from GitHub with
+`curl`, extracts it with `jq`, masks it in the Actions log, then runs
+`az login --service-principal --federated-token` and
+`az account set --subscription`. This branch uses the GitLab-style CLI
+approach instead of the `azure/login` action. The token stays in the login
+step; do not save it as a secret or artifact. The hosted Ubuntu runner must
+provide `curl`, `jq`, and Azure CLI.
 The subsequent `az acr login --name "$ACR_NAME"` in CI authenticates Docker
 to ACR using that Azure session.
 
@@ -133,6 +139,6 @@ verifies the same package or image digest, and then creates the release.
 
 ## POC pinning
 
-The ACA sandbox CI and CD callers use `@v1.0.4a`.
+The ACA sandbox CI and CD callers use `@v1.0.5a`.
 Before production adoption, tag this repository and pin every caller to an
 immutable version or commit SHA.

@@ -102,7 +102,6 @@ on:
         default: 14
 
 permissions:
-  id-token: write
   contents: read
   code-quality: write
 
@@ -206,29 +205,26 @@ jobs:
           echo "registry_server=$registry_server" >> "$GITHUB_OUTPUT"
           echo "image_tag=${registry_server}/${IMAGE_REPOSITORY}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
-      - name: Log in to Azure with federated service principal
+      - name: Log in to Azure with service principal
         if: inputs.artifact_type == 'container' && inputs.publish_artifact && github.event_name == 'push'
         shell: bash
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
           : "${AZURE_CLIENT_ID:?Set AZURE_CLIENT_ID}"
+          : "${AZURE_CLIENT_SECRET:?Set AZURE_CLIENT_SECRET}"
           : "${AZURE_TENANT_ID:?Set AZURE_TENANT_ID}"
           : "${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID}"
 
-          OIDC_TOKEN="$(curl --fail --silent --show-error \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" \
-            | jq -er '.value // empty')"
-          echo "::add-mask::$OIDC_TOKEN"
-
           az login --service-principal \
             --username "$AZURE_CLIENT_ID" \
+            --password="$AZURE_CLIENT_SECRET" \
             --tenant "$AZURE_TENANT_ID" \
-            --federated-token "$OIDC_TOKEN" --output none
+            --output none
           az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 
       - name: Log in to Azure Container Registry

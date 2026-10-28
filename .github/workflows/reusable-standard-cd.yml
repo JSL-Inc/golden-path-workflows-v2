@@ -3,6 +3,11 @@ name: Reusable Standard CD
 on:
   workflow_call:
     inputs:
+      execute_delivery:
+        description: Execute deployment and environment gates; false reviews CI/artifact handoff and stops before delivery
+        required: false
+        type: boolean
+        default: true
       artifact_name:
         description: Name used by Standard CI for the deployable artifact
         required: false
@@ -72,7 +77,7 @@ concurrency:
 jobs:
   route:
     name: Determine Delivery Plan
-    if: github.event_name != 'push' || github.event.created == false
+    if: inputs.execute_delivery == false || github.event_name != 'push' || github.event.created == false
     runs-on: ubuntu-latest
     outputs:
       branch_type: ${{ steps.route.outputs.branch_type }}
@@ -385,10 +390,8 @@ jobs:
     name: Deploy ${{ needs.route.outputs.environment }}
     needs: [route, artifact]
     if: >-
-      always() &&
-      needs.route.result == 'success' &&
-      needs.route.outputs.deploy == 'true' &&
-      needs.artifact.result == 'success'
+      inputs.execute_delivery &&
+      (always() && needs.route.result == 'success' && needs.route.outputs.deploy == 'true' && needs.artifact.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       application_url: ${{ steps.deploy_aca.outputs.application_url || steps.deploy_custom.outputs.application_url }}
@@ -489,7 +492,9 @@ jobs:
   integration:
     name: Integration Tests
     needs: [route, deploy]
-    if: always() && needs.route.outputs.integration == 'true' && needs.deploy.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.integration == 'true' && needs.deploy.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -511,7 +516,9 @@ jobs:
   regression:
     name: Regression Tests
     needs: [route, deploy]
-    if: always() && needs.route.outputs.regression == 'true' && needs.deploy.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.regression == 'true' && needs.deploy.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -533,7 +540,9 @@ jobs:
   smoke:
     name: Smoke Tests
     needs: [route, deploy]
-    if: always() && needs.route.outputs.smoke == 'true' && needs.deploy.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.smoke == 'true' && needs.deploy.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -559,7 +568,9 @@ jobs:
   dast:
     name: DAST Policy Validation
     needs: [route, deploy]
-    if: always() && needs.route.outputs.dast == 'true' && needs.deploy.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.dast == 'true' && needs.deploy.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -579,7 +590,9 @@ jobs:
   int_gate:
     name: INT Gate
     needs: [route, deploy, integration, regression]
-    if: always() && needs.route.outputs.branch_type == 'feature'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.branch_type == 'feature')
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate INT gate
@@ -601,9 +614,8 @@ jobs:
     name: QA Gate
     needs: [route, deploy, integration, regression, smoke, dast]
     if: >-
-      always() &&
-      (needs.route.outputs.branch_type == 'release' ||
-       needs.route.outputs.branch_type == 'hotfix')
+      inputs.execute_delivery &&
+      (always() && (needs.route.outputs.branch_type == 'release' || needs.route.outputs.branch_type == 'hotfix'))
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate QA gate
@@ -630,8 +642,8 @@ jobs:
     name: Deploy ePreProd
     needs: [route, artifact, qa_gate]
     if: >-
-      always() && needs.route.outputs.use_epreprod == 'true' &&
-      needs.qa_gate.result == 'success'
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.use_epreprod == 'true' && needs.qa_gate.result == 'success')
     runs-on: ubuntu-latest
     outputs:
       application_url: ${{ steps.deploy_aca.outputs.application_url || steps.deploy_custom.outputs.application_url }}
@@ -709,7 +721,9 @@ jobs:
   preprod_integration:
     name: ePreProd Integration Tests
     needs: [route, deploy_epreprod]
-    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -730,7 +744,9 @@ jobs:
   preprod_regression:
     name: ePreProd Regression Tests
     needs: [route, deploy_epreprod]
-    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -751,7 +767,9 @@ jobs:
   preprod_smoke:
     name: ePreProd Smoke Tests
     needs: [route, deploy_epreprod]
-    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -776,7 +794,9 @@ jobs:
   preprod_dast:
     name: ePreProd DAST Policy Validation
     needs: [route, deploy_epreprod]
-    if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -801,7 +821,9 @@ jobs:
       - preprod_regression
       - preprod_smoke
       - preprod_dast
-    if: always() && needs.route.outputs.use_epreprod == 'true'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.use_epreprod == 'true')
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate ePreProd gate
@@ -827,7 +849,9 @@ jobs:
   production_verification:
     name: Production Verification
     needs: [route, deploy, smoke]
-    if: always() && needs.route.outputs.branch_type == 'main'
+    if: >-
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.branch_type == 'main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -854,9 +878,8 @@ jobs:
     name: Release Readiness
     needs: [route, qa_gate, preprod_gate]
     if: >-
-      always() &&
-      (needs.route.outputs.branch_type == 'release' ||
-       needs.route.outputs.branch_type == 'hotfix')
+      inputs.execute_delivery &&
+      (always() && (needs.route.outputs.branch_type == 'release' || needs.route.outputs.branch_type == 'hotfix'))
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate release readiness
@@ -886,9 +909,8 @@ jobs:
     name: Production Release
     needs: [route, production_verification]
     if: >-
-      always() &&
-      needs.route.outputs.branch_type == 'main' &&
-      needs.production_verification.result == 'success'
+      inputs.execute_delivery &&
+      (always() && needs.route.outputs.branch_type == 'main' && needs.production_verification.result == 'success')
     runs-on: ubuntu-latest
     concurrency:
       group: production-release-${{ github.sha }}
@@ -1076,3 +1098,38 @@ jobs:
             echo "- Release artifact attached"
             echo "- GitHub release and tag created"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  delivery_review:
+    name: Delivery review — stop before deployment
+    needs: [route, wait_for_ci, artifact]
+    if: always() && inputs.execute_delivery == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the actual CD handoff and stop
+        shell: bash
+        env:
+          TARGET: ${{ needs.route.outputs.environment }}
+          ROUTE_RESULT: ${{ needs.route.result }}
+          CI_RESULT: ${{ needs.wait_for_ci.result }}
+          ARTIFACT_RESULT: ${{ needs.artifact.result }}
+          CI_RUN_ID: ${{ needs.artifact.outputs.run_id }}
+        run: |
+          {
+            echo "## Golden Path CD — delivery review"
+            echo
+            echo "| Checkpoint | Actual result |"
+            echo "|---|---|"
+            echo "| Delivery plan | $ROUTE_RESULT; target: $TARGET |"
+            echo "| Successful CI for this same commit | $CI_RESULT; run: $CI_RUN_ID |"
+            echo "| Retrieve and validate CI output | $ARTIFACT_RESULT |"
+            echo "| Environment deployment | Not run — disabled for rehearsal |"
+            echo "| INT / QA / ePreProd qualification | Not run |"
+            echo "| Production / release | Not run |"
+            echo
+            echo "The real reusable CD workflow ran its plan and artifact handoff."
+            echo "The package came from GitHub Actions; this is not an Artifactory retrieval."
+            echo "ACA/ACR configuration remains visible in the caller; no Azure login was attempted."
+            echo "This run deliberately stops without becoming successful delivery evidence."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Expected rehearsal stop before deployment; not a successful environment delivery."
+          exit 1

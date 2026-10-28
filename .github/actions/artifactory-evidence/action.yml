@@ -1,0 +1,38 @@
+name: Artifactory package evidence
+description: Demo packaging and optional real Artifactory round trip; preview never claims publication
+inputs:
+  mode:
+    description: preview or roundtrip; roundtrip requires a real endpoint and token
+    default: preview
+  source-path:
+    description: Directory containing the built files
+    required: true
+  output-path:
+    description: Local evidence directory
+    default: artifactory-evidence
+  application-id:
+    description: Application identifier used in package coordinates
+    required: true
+  repository:
+    description: Artifactory generic repository key
+    default: demo-packages
+  url:
+    description: Artifactory base URL, ending in /artifactory
+    default: ''
+  token:
+    description: Access token; used only for an explicitly requested round trip
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Prepare and verify artifact evidence
+      shell: bash
+      env:
+        DEMO_MODE: ${{ inputs.mode }}
+        DEMO_SOURCE: ${{ inputs.source-path }}
+        DEMO_OUTPUT: ${{ inputs.output-path }}
+        DEMO_APPLICATION: ${{ inputs.application-id }}
+        DEMO_REPOSITORY: ${{ inputs.repository }}
+        DEMO_ARTIFACTORY_URL: ${{ inputs.url }}
+        DEMO_ARTIFACTORY_TOKEN: ${{ inputs.token }}
+      run: python "$GITHUB_ACTION_PATH/evidence.py"

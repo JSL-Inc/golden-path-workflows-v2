@@ -365,7 +365,7 @@ jobs:
               echo "| Container build | $(result '${{ steps.container_custom_build.outcome || steps.container_build.outcome }}') |"
             fi
 
-            if [[ "$PUBLISH_ARTIFACT" == "true" && "${{ github.event_name }}" == "push" ]]; then
+            if [[ "$PUBLISH_ARTIFACT" == "true" && ( "$ARTIFACT_TYPE" == "package" || "${{ github.event_name }}" == "push" ) ]]; then
               echo "| Deployable $ARTIFACT_TYPE | $(result "$artifact_outcome") |"
             else
               echo "| Deployable $ARTIFACT_TYPE | Validated only; not published |"

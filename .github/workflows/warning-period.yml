@@ -1,0 +1,272 @@
+name: Golden Path Warning Period
+
+on:
+  workflow_call:
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: write
+  statuses: read
+
+concurrency:
+  group: warning-period-${{ github.repository }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  warning:
+    name: Warning Period Notice
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check results and post warning-period notice
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- golden-path-warning-period -->';
+            const requiredChecks = [
+              { name: 'Standard CI', aliases: ['Standard CI'] },
+              { name: 'INT Gate', aliases: ['INT Gate'] },
+              { name: 'Preprod Gate', aliases: ['ePreProd Gate', 'Preprod Gate'] },
+              { name: 'Branch Naming', aliases: ['Branch Name', 'Branch Naming'] },
+              { name: 'PR Flow', aliases: ['Branch Flow', 'PR Flow'] },
+              { name: 'QA Gate', aliases: ['QA Gate'] },
+              { name: 'Promotion Gate', aliases: ['Promotion Gate'] },
+            ];
+            const rulesetChecks = [
+              { name: 'Code Coverage', aliases: ['Coverage 80%', 'Code Coverage'] },
+              { name: 'Code Scanning', aliases: ['CodeQL', 'Code Scanning'] },
+              {
+                name: 'Code Quality',
+                aliases: ['Code Quality', 'Build and Quality Checks'],
+              },
+              { name: 'Secret Scanning', aliases: ['Secret Scanning'] },
+              { name: 'FOSSA Scan', aliases: ['FOSSA', 'FOSSA Scan'] },
+            ];
+            const targets = [...requiredChecks, ...rulesetChecks];
+
+            const { owner, repo } = context.repo;
+            let pullRequest = context.payload.pull_request;
+
+            if (!pullRequest) {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: context.sha,
+              });
+              const candidate = associated.data.find((item) => item.state === 'open');
+
+              if (candidate) {
+                const response = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: candidate.number,
+                });
+                pullRequest = response.data;
+              }
+            }
+
+            if (!pullRequest) {
+              core.warning('No open pull request is associated with this invocation.');
+              return;
+            }
+
+            const headSha = pullRequest.head.sha;
+            const normalize = (value) => value.trim().toLowerCase();
+            const matchesAlias = (checkName, aliases) => {
+              const normalizedName = normalize(checkName);
+              return aliases.some((alias) => {
+                const normalizedAlias = normalize(alias);
+                return normalizedName === normalizedAlias ||
+                  normalizedName.endsWith(` / ${normalizedAlias}`);
+              });
+            };
+
+            const getResults = async () => {
+              const checks = await github.paginate(
+                github.rest.checks.listForRef,
+                {
+                  owner,
+                  repo,
+                  ref: headSha,
+                  filter: 'latest',
+                  per_page: 100,
+                },
+              );
+
+              const { data: combinedStatus } =
+                await github.rest.repos.getCombinedStatusForRef({
+                  owner,
+                  repo,
+                  ref: headSha,
+                  per_page: 100,
+                });
+              const latestStatuses = new Map();
+
+              for (const status of combinedStatus.statuses) {
+                if (!latestStatuses.has(status.context)) {
+                  latestStatuses.set(status.context, {
+                    name: status.context,
+                    status: status.state === 'pending' ? 'in_progress' : 'completed',
+                    conclusion: status.state === 'success'
+                      ? 'success'
+                      : status.state === 'pending'
+                        ? null
+                        : 'failure',
+                  });
+                }
+              }
+
+              return [...checks, ...latestStatuses.values()].filter((check) =>
+                !normalize(check.name).includes('warning period notice'),
+              );
+            };
+
+            const isRunning = (check) => check.status !== 'completed';
+            const findMatches = (checks, target) => checks.filter((check) =>
+              matchesAlias(check.name, target.aliases),
+            );
+
+            let checkRuns = [];
+
+            // Reusable workflows start alongside the other PR workflows. Wait until
+            // every Golden Path check exists and has finished before reporting.
+            for (let attempt = 1; attempt <= 6; attempt += 1) {
+              checkRuns = await getResults();
+              const requiredMatches = requiredChecks.map((target) =>
+                findMatches(checkRuns, target),
+              );
+              const rulesetMatches = rulesetChecks.flatMap((target) =>
+                findMatches(checkRuns, target),
+              );
+              const allPresent = requiredMatches.every((matches) => matches.length > 0);
+              const allFinished = requiredMatches.every((matches) =>
+                matches.length > 0 && matches.every((check) => !isRunning(check)),
+              );
+              const rulesetsFinished = rulesetMatches.every((check) => !isRunning(check));
+
+              if (attempt >= 3 && allPresent && allFinished && rulesetsFinished) {
+                break;
+              }
+
+              core.info(`Waiting for Golden Path checks (${attempt}/6).`);
+              if (attempt < 6) {
+                await new Promise((resolve) => setTimeout(resolve, 15000));
+              }
+            }
+
+            const failureConclusions = new Set([
+              'action_required',
+              'cancelled',
+              'failure',
+              'startup_failure',
+              'stale',
+              'timed_out',
+            ]);
+
+            const results = targets.map((target) => {
+              const matches = findMatches(checkRuns, target);
+
+              if (matches.length === 0) {
+                return {
+                  ...target,
+                  state: 'missing',
+                  result: '➖ Not found or not configured',
+                  details: target.name === 'FOSSA Scan'
+                    ? 'Not currently implemented'
+                    : 'No matching check run found',
+                };
+              }
+
+              const failing = matches.filter((check) =>
+                failureConclusions.has(check.conclusion),
+              );
+              const running = matches.filter(isRunning);
+              const successful = matches.filter((check) => check.conclusion === 'success');
+
+              if (failing.length > 0) {
+                return {
+                  ...target,
+                  state: 'failing',
+                  result: '❌ Failing',
+                  details: failing.map((check) => check.name).join(', '),
+                };
+              }
+
+              if (running.length > 0) {
+                return {
+                  ...target,
+                  state: 'pending',
+                  result: '⏳ Pending',
+                  details: running.map((check) => check.name).join(', '),
+                };
+              }
+
+              if (successful.length > 0) {
+                return {
+                  ...target,
+                  state: 'passing',
+                  result: '✅ Passing',
+                  details: successful.map((check) => check.name).join(', '),
+                };
+              }
+
+              return {
+                ...target,
+                state: 'skipped',
+                result: '⚪ Skipped or neutral',
+                details: matches.map((check) => check.name).join(', '),
+              };
+            });
+
+            const failing = results.filter((result) => result.state === 'failing');
+            const pending = results.filter((result) => result.state === 'pending');
+            const summary = failing.length > 0
+              ? `The following future required checks are currently failing: **${failing.map((result) => result.name).join(', ')}**.`
+              : pending.length > 0
+                ? 'No completed check is currently failing, but one or more checks are still pending.'
+                : 'No reported check is currently failing.';
+
+            const rows = results.map((result) =>
+              `| ${result.name} | ${result.result} | ${result.details} |`,
+            ).join('\n');
+
+            const body = `${marker}
+            ## Golden Path warning period
+
+            ${summary}
+
+            This notice is **informational**. Existing repository rulesets may already require CI or promotion results and can block merging independently. Missing, skipped, or unimplemented checks are not passes. Additional security enforcement remains subject to the agreed warning-period rollout.
+
+            | Check | Current result | Matched result |
+            |---|---|---|
+            ${rows}
+
+            _Results for commit \`${headSha.slice(0, 7)}\`._`;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pullRequest.number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.user?.type === 'Bot' && comment.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.info(`Updated warning-period results on PR #${pullRequest.number}.`);
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pullRequest.number,
+                body,
+              });
+              core.info(`Posted warning-period results on PR #${pullRequest.number}.`);
+            }

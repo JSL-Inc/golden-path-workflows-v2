@@ -42,6 +42,13 @@ The CD workflow calls these paths in the application repository:
 - `scripts/smoke-test.sh`
 - `.zap/rules.tsv`
 
+On `personal-sp-test-rally-defects`, INT/QA replace the integration-test command
+with one external Rally defects composite-action call. The integration script
+remains in use for ePreProd. Regression tests remain separate in every stage.
+See [Rally defects configuration](rally-defects.md) for the action-reference
+placeholder, caller settings, secret, and enforcement behavior. INT/QA are not
+ready to run until the action reference and Rally configuration are supplied.
+
 The unit-test script must emit `reports/junit/results.xml` and
 `reports/coverage/cobertura.xml`. Package delivery still expects `dist/**`.
 Container delivery uses `artifact_type: container` and either a Dockerfile or
@@ -131,3 +138,4 @@ verifies the same package or image digest, and then creates the release.
 The ACA sandbox CI and CD callers use `@personal-sp-test`.
 Before production adoption, tag this repository and pin every caller to an
 immutable version or commit SHA.
+

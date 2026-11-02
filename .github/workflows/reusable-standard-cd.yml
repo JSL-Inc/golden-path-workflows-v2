@@ -34,7 +34,7 @@ on:
         type: string
         default: bash scripts/deploy.sh
       integration_test_command:
-        description: Integration-test command; environment is appended
+        description: ePreProd integration-test command; INT/QA use the Rally defects gate
         required: false
         type: string
         default: bash scripts/integration-test.sh
@@ -58,6 +58,73 @@ on:
         required: false
         type: string
         default: .zap/rules.tsv
+      defects_runner:
+        description: Runner with Python/pip and access to Rally and the action dependencies
+        required: false
+        type: string
+        default: ubuntu-latest
+      defects_enforce:
+        description: Fail INT/QA on blocking defects; false reports a warning-only verdict
+        required: false
+        type: boolean
+        default: true
+      rally_url:
+        description: Rally base URL; replace the placeholder before running INT/QA
+        required: false
+        type: string
+        default: https://REPLACE_WITH_RALLY_HOST
+      rally_workspace_id:
+        description: Rally workspace ObjectID; supply from the caller configuration
+        required: false
+        type: string
+        default: ""
+      rally_project_id:
+        description: Rally project ObjectID; supply from the caller configuration
+        required: false
+        type: string
+        default: ""
+      rally_release_name:
+        description: Rally release name; empty queries all releases in the configured scope
+        required: false
+        type: string
+        default: ""
+      rally_extra_filters:
+        description: Optional Rally filters, one per line; environment is only a report label
+        required: false
+        type: string
+        default: ""
+      rally_severity_field:
+        description: Rally field holding the blocking severity or priority values
+        required: false
+        type: string
+        default: Priority
+      rally_severity_values:
+        description: Comma-separated blocking values matching the Rally field configuration
+        required: false
+        type: string
+        default: Critical,High
+      rally_exclude_states:
+        description: Comma-separated defect states excluded from the blocking count
+        required: false
+        type: string
+        default: Closed
+      rally_include_child_projects:
+        description: Include child projects in the defect query
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      RALLY_API_KEY:
+        description: Read-only ALM WSAPI key; required at runtime for live INT/QA checks
+        required: false
+      AZURE_CLIENT_ID:
+        required: false
+      AZURE_CLIENT_SECRET:
+        required: false
+      AZURE_TENANT_ID:
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        required: false
 
 permissions:
   actions: read
@@ -483,26 +550,36 @@ jobs:
           fi
 
   integration:
-    name: Integration Tests
+    # Keep this job ID so existing INT/QA needs references remain valid.
+    name: Rally Defects (INT/QA)
     needs: [route, deploy]
     if: always() && needs.route.outputs.integration == 'true' && needs.deploy.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.defects_runner }}
+    outputs:
+      verdict: ${{ steps.defects.outputs.verdict }}
+      defect_count: ${{ steps.defects.outputs.defect-count }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Run integration tests
-        shell: bash
-        env:
-          COMMAND: ${{ inputs.integration_test_command }}
-          ENVIRONMENT: ${{ needs.route.outputs.environment }}
-          APPLICATION_URL: ${{ needs.deploy.outputs.application_url }}
-        run: $COMMAND "$ENVIRONMENT" "$APPLICATION_URL"
-      - name: Upload integration evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+      # TODO: Replace the entire uses reference with the approved action directory
+      # and version/commit. Do not put internal repository links in this template.
+      # The action owns querying, verdict/exit status, and result artifact upload.
+      - name: Check blocking Rally defects
+        id: defects
+        uses: REPLACE-WITH-OWNER/REPLACE-WITH-REPOSITORY/actions/defects-gate@REPLACE-WITH-REF
         with:
-          name: integration-evidence
-          path: reports/integration/**
-          if-no-files-found: error
+          environment: ${{ needs.route.outputs.environment }}
+          rally-api-key: ${{ secrets.RALLY_API_KEY }}
+          rally-url: ${{ inputs.rally_url }}
+          rally-workspace-id: ${{ inputs.rally_workspace_id }}
+          rally-project-id: ${{ inputs.rally_project_id }}
+          release-name: ${{ inputs.rally_release_name }}
+          extra-filters: ${{ inputs.rally_extra_filters }}
+          severity-field: ${{ inputs.rally_severity_field }}
+          severity-values: ${{ inputs.rally_severity_values }}
+          exclude-states: ${{ inputs.rally_exclude_states }}
+          include-child-projects: ${{ inputs.rally_include_child_projects }}
+          max-count: "0"
+          enforce: ${{ inputs.defects_enforce }}
+          upload-results: "true"
 
   regression:
     name: Regression Tests
@@ -582,13 +659,13 @@ jobs:
         shell: bash
         env:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          DEFECTS_RESULT: ${{ needs.integration.result }}
           REGRESSION_RESULT: ${{ needs.regression.result }}
         run: |
           if [[ "$DEPLOY_RESULT" != "success" ||
-                "$INTEGRATION_RESULT" != "success" ||
+                "$DEFECTS_RESULT" != "success" ||
                 "$REGRESSION_RESULT" != "success" ]]; then
-            echo "::error::INT deployment or testing failed."
+            echo "::error::INT deployment, Rally defects check, or regression testing did not succeed."
             exit 1
           fi
           echo "INT Gate passed."
@@ -606,17 +683,17 @@ jobs:
         shell: bash
         env:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          DEFECTS_RESULT: ${{ needs.integration.result }}
           REGRESSION_RESULT: ${{ needs.regression.result }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
           DAST_RESULT: ${{ needs.dast.result }}
         run: |
           if [[ "$DEPLOY_RESULT" != "success" ||
-                "$INTEGRATION_RESULT" != "success" ||
+                "$DEFECTS_RESULT" != "success" ||
                 "$REGRESSION_RESULT" != "success" ||
                 "$SMOKE_RESULT" != "success" ||
                 "$DAST_RESULT" != "success" ]]; then
-            echo "::error::EQA deployment or testing failed."
+            echo "::error::EQA deployment, Rally defects check, regression, smoke, or DAST validation did not succeed."
             exit 1
           fi
           echo "QA Gate passed."
@@ -1069,3 +1146,4 @@ jobs:
             echo "- Release artifact attached"
             echo "- GitHub release and tag created"
           } >> "$GITHUB_STEP_SUMMARY"
+

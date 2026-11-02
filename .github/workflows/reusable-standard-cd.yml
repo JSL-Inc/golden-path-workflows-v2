@@ -33,11 +33,6 @@ on:
         required: false
         type: string
         default: bash scripts/deploy.sh
-      integration_test_command:
-        description: ePreProd integration-test command; INT/QA use the Rally defects gate
-        required: false
-        type: string
-        default: bash scripts/integration-test.sh
       regression_test_command:
         description: Regression-test command; environment is appended
         required: false
@@ -64,12 +59,12 @@ on:
         type: string
         default: ubuntu-latest
       defects_enforce:
-        description: Fail INT/QA on blocking defects; false reports a warning-only verdict
+        description: Fail INT/QA/ePreProd on blocking defects; false reports a warning-only verdict
         required: false
         type: boolean
         default: true
       rally_url:
-        description: Rally base URL; replace the placeholder before running INT/QA
+        description: Rally base URL; replace the placeholder before running defect management
         required: false
         type: string
         default: https://REPLACE_WITH_RALLY_HOST
@@ -113,9 +108,14 @@ on:
         required: false
         type: boolean
         default: false
+      rally_mock_response:
+        description: TESTING ONLY - caller-repository-relative mock JSON path; blank queries live Rally
+        required: false
+        type: string
+        default: ""
     secrets:
       RALLY_API_KEY:
-        description: Read-only ALM WSAPI key; required at runtime for live INT/QA checks
+        description: Read-only ALM WSAPI key; required at runtime for live defect management
         required: false
       AZURE_CLIENT_ID:
         required: false
@@ -144,7 +144,7 @@ jobs:
       branch_type: ${{ steps.route.outputs.branch_type }}
       environment: ${{ steps.route.outputs.environment }}
       deploy: ${{ steps.route.outputs.deploy }}
-      integration: ${{ steps.route.outputs.integration }}
+      defect_management: ${{ steps.route.outputs.defect_management }}
       regression: ${{ steps.route.outputs.regression }}
       smoke: ${{ steps.route.outputs.smoke }}
       dast: ${{ steps.route.outputs.dast }}
@@ -159,7 +159,7 @@ jobs:
           branch_type=""
           environment=""
           deploy=false
-          integration=false
+          defect_management=false
           regression=false
           smoke=false
           dast=false
@@ -174,14 +174,14 @@ jobs:
               environment="${BRANCH#feature-}"
               environment="${environment%%-*}"
               deploy=true
-              integration=true
+              defect_management=true
               regression=true
               ;;
             release-eqa-*|hotfix-eqa-*)
               branch_type="${BRANCH%%-*}"
               environment="eqa"
               deploy=true
-              integration=true
+              defect_management=true
               regression=true
               smoke=true
               dast=true
@@ -190,7 +190,7 @@ jobs:
               branch_type="${BRANCH%%-*}"
               environment="eqa"
               deploy=true
-              integration=true
+              defect_management=true
               regression=true
               smoke=true
               dast=true
@@ -212,7 +212,7 @@ jobs:
             echo "branch_type=$branch_type"
             echo "environment=$environment"
             echo "deploy=$deploy"
-            echo "integration=$integration"
+            echo "defect_management=$defect_management"
             echo "regression=$regression"
             echo "smoke=$smoke"
             echo "dast=$dast"
@@ -549,16 +549,18 @@ jobs:
             echo "application_url=${APPLICATION_URL%/}" >> "$GITHUB_OUTPUT"
           fi
 
-  integration:
-    # Keep this job ID so existing INT/QA needs references remain valid.
-    name: Rally Defects (INT/QA)
+  defect_management:
+    name: Defect Management (INT/QA)
     needs: [route, deploy]
-    if: always() && needs.route.outputs.integration == 'true' && needs.deploy.result == 'success'
+    if: always() && needs.route.outputs.defect_management == 'true' && needs.deploy.result == 'success'
     runs-on: ${{ inputs.defects_runner }}
     outputs:
       verdict: ${{ steps.defects.outputs.verdict }}
       defect_count: ${{ steps.defects.outputs.defect-count }}
     steps:
+      - name: Check out application repository for mock data
+        if: inputs.rally_mock_response != ''
+        uses: actions/checkout@v4
       # TODO: Replace the entire uses reference with the approved action directory
       # and version/commit. Do not put internal repository links in this template.
       # The action owns querying, verdict/exit status, and result artifact upload.
@@ -580,6 +582,7 @@ jobs:
           max-count: "0"
           enforce: ${{ inputs.defects_enforce }}
           upload-results: "true"
+          mock-response: ${{ inputs.rally_mock_response }}
 
   regression:
     name: Regression Tests
@@ -651,7 +654,7 @@ jobs:
 
   int_gate:
     name: INT Gate
-    needs: [route, deploy, integration, regression]
+    needs: [route, deploy, defect_management, regression]
     if: always() && needs.route.outputs.branch_type == 'feature'
     runs-on: ubuntu-latest
     steps:
@@ -659,7 +662,7 @@ jobs:
         shell: bash
         env:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          DEFECTS_RESULT: ${{ needs.integration.result }}
+          DEFECTS_RESULT: ${{ needs.defect_management.result }}
           REGRESSION_RESULT: ${{ needs.regression.result }}
         run: |
           if [[ "$DEPLOY_RESULT" != "success" ||
@@ -672,7 +675,7 @@ jobs:
 
   qa_gate:
     name: QA Gate
-    needs: [route, deploy, integration, regression, smoke, dast]
+    needs: [route, deploy, defect_management, regression, smoke, dast]
     if: >-
       always() &&
       (needs.route.outputs.branch_type == 'release' ||
@@ -683,7 +686,7 @@ jobs:
         shell: bash
         env:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
-          DEFECTS_RESULT: ${{ needs.integration.result }}
+          DEFECTS_RESULT: ${{ needs.defect_management.result }}
           REGRESSION_RESULT: ${{ needs.regression.result }}
           SMOKE_RESULT: ${{ needs.smoke.result }}
           DAST_RESULT: ${{ needs.dast.result }}
@@ -776,26 +779,38 @@ jobs:
             echo "application_url=${APPLICATION_URL%/}" >> "$GITHUB_OUTPUT"
           fi
 
-  preprod_integration:
-    name: ePreProd Integration Tests
+  preprod_defect_management:
+    name: ePreProd Defect Management
     needs: [route, deploy_epreprod]
     if: always() && needs.route.outputs.use_epreprod == 'true' && needs.deploy_epreprod.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.defects_runner }}
+    outputs:
+      verdict: ${{ steps.defects.outputs.verdict }}
+      defect_count: ${{ steps.defects.outputs.defect-count }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Run integration tests
-        shell: bash
-        env:
-          COMMAND: ${{ inputs.integration_test_command }}
-          APPLICATION_URL: ${{ needs.deploy_epreprod.outputs.application_url }}
-        run: $COMMAND epreprod "$APPLICATION_URL"
-      - name: Upload integration evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Check out application repository for mock data
+        if: inputs.rally_mock_response != ''
+        uses: actions/checkout@v4
+      # TODO: Use the same approved action directory and version/commit as INT/QA.
+      - name: Check blocking Rally defects
+        id: defects
+        uses: REPLACE-WITH-OWNER/REPLACE-WITH-REPOSITORY/actions/defects-gate@REPLACE-WITH-REF
         with:
-          name: epreprod-integration-evidence
-          path: reports/integration/**
-          if-no-files-found: error
+          environment: epreprod
+          rally-api-key: ${{ secrets.RALLY_API_KEY }}
+          rally-url: ${{ inputs.rally_url }}
+          rally-workspace-id: ${{ inputs.rally_workspace_id }}
+          rally-project-id: ${{ inputs.rally_project_id }}
+          release-name: ${{ inputs.rally_release_name }}
+          extra-filters: ${{ inputs.rally_extra_filters }}
+          severity-field: ${{ inputs.rally_severity_field }}
+          severity-values: ${{ inputs.rally_severity_values }}
+          exclude-states: ${{ inputs.rally_exclude_states }}
+          include-child-projects: ${{ inputs.rally_include_child_projects }}
+          max-count: "0"
+          enforce: ${{ inputs.defects_enforce }}
+          upload-results: "true"
+          mock-response: ${{ inputs.rally_mock_response }}
 
   preprod_regression:
     name: ePreProd Regression Tests
@@ -867,7 +882,7 @@ jobs:
     needs:
       - route
       - deploy_epreprod
-      - preprod_integration
+      - preprod_defect_management
       - preprod_regression
       - preprod_smoke
       - preprod_dast
@@ -878,17 +893,17 @@ jobs:
         shell: bash
         env:
           DEPLOY_RESULT: ${{ needs.deploy_epreprod.result }}
-          INTEGRATION_RESULT: ${{ needs.preprod_integration.result }}
+          DEFECTS_RESULT: ${{ needs.preprod_defect_management.result }}
           REGRESSION_RESULT: ${{ needs.preprod_regression.result }}
           SMOKE_RESULT: ${{ needs.preprod_smoke.result }}
           DAST_RESULT: ${{ needs.preprod_dast.result }}
         run: |
           if [[ "$DEPLOY_RESULT" != "success" ||
-                "$INTEGRATION_RESULT" != "success" ||
+                "$DEFECTS_RESULT" != "success" ||
                 "$REGRESSION_RESULT" != "success" ||
                 "$SMOKE_RESULT" != "success" ||
                 "$DAST_RESULT" != "success" ]]; then
-            echo "::error::ePreProd deployment or testing failed."
+            echo "::error::ePreProd deployment, Rally defects check, regression, smoke, or DAST validation did not succeed."
             exit 1
           fi
           echo "ePreProd Gate passed."

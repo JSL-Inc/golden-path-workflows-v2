@@ -1,14 +1,14 @@
-# Rally defects gate for INT/QA
+# Rally defect management for INT/QA and ePreProd
 
-This branch replaces the INT/QA integration-test command with one call to an
-external defects composite action. It does not implement integration testing.
-Regression testing remains a separate job, and ePreProd still uses
-`integration_test_command`. Deployment, artifact promotion, and branch routing
-are unchanged.
+This branch replaces the former integration checks in INT/QA and ePreProd
+with calls to an external defects composite action. It does not implement
+integration testing. Regression testing remains a separate job. Deployment,
+artifact promotion, and branch selection are unchanged; the route flag and
+job references are now consistently named `defect_management`.
 
 ## Replace the action reference
 
-In `.github/workflows/reusable-standard-cd.yml`, replace:
+In both defect-management jobs in `.github/workflows/reusable-standard-cd.yml`, replace:
 
 ```yaml
 uses: REPLACE-WITH-OWNER/REPLACE-WITH-REPOSITORY/actions/defects-gate@REPLACE-WITH-REF
@@ -67,7 +67,8 @@ states to the actual Rally configuration. Child projects are excluded by
 default to avoid unintentionally counting another team's defects.
 
 The action receives the routed label (`eint1` through `eint6`, or `eqa`) for
-reporting. That label does not itself filter Rally records. Both stages query
+INT/QA and `epreprod` for ePreProd reporting. That label does not itself filter
+Rally records. All stages query
 the same configured scope unless the caller supplies different settings in
 its respective runs. Add the appropriate application/release/environment
 filters when a narrower population is required.
@@ -84,7 +85,7 @@ The external action owns the query, threshold evaluation, outputs, and JSON
 artifact upload. The calling workflow has no second enforcement or upload
 step. The fixed maximum blocking count is zero.
 
-| Scenario | Expected defects-job result | INT/QA behavior |
+| Scenario | Expected defects-job result | INT/QA/ePreProd behavior |
 | --- | --- | --- |
 | No blocking defects | Success | Other stage checks must also succeed |
 | Blocking defects, `defects_enforce: true` | Failure | Aggregate gate fails |
@@ -92,12 +93,28 @@ step. The fixed maximum blocking count is zero.
 | Authentication, query, configuration, or dependency error | Failure | Aggregate gate fails; an error must never mean zero defects |
 | Defects job unexpectedly skipped or cancelled | Not success | Aggregate gate fails for an applicable stage |
 
-The `integration` job ID is retained to preserve existing dependencies, while
-its display name is `Rally Defects (INT/QA)`. It exposes `verdict` and
-`defect_count` outputs for reporting. INT/QA evaluate the job result so that
-warning mode is respected; they do not independently enforce `verdict`.
+The jobs are `defect_management` and `preprod_defect_management`. The route
+output, job dependencies, and INT/QA/ePreProd gate result references use these
+names throughout. Both jobs expose `verdict` and `defect_count` outputs for
+reporting. Aggregate gates evaluate the job result so that warning mode is
+respected; they do not independently enforce `verdict`.
 QA failure continues to block ePreProd deployment and Release Readiness.
+ePreProd defects failure fails its aggregate gate and Release Readiness.
 The existing INT Gate remains available for the repository's merge policy.
+Remove the obsolete `integration_test_command` input from any custom caller.
+Application URLs remain in the deployment, regression, smoke, and production
+verification paths; they are not inputs to defect management.
+
+## Mock testing
+
+For a mock run, commit sanitized JSON at `demo/rally_two.json` in the application
+repository and pass `rally_mock_response: demo/rally_two.json` through the
+application CD caller. Both defects jobs then check out that caller repository
+before invoking the action. The file must exist on the tested application
+commit. The same mock input applies to INT/QA and ePreProd when those stages run.
+With the default empty input, no checkout is needed and the action queries live
+Rally. Clear the mock input to resume live checks. Mock results only verify
+pipeline behavior; they do not provide evidence of a successful live Rally query.
 
 Before enabling the live integration, verify the external action contract:
 
@@ -111,7 +128,7 @@ Before enabling the live integration, verify the external action contract:
   paginated results.
 - It does not require a checkout of the application repository for live reads.
 
-No mock response or successful fallback is configured. Until the reference,
-credentials, and scope are configured, this is an integration template rather
+No successful fallback is configured. Until the action references and either
+the live configuration or mock data are supplied, this is an integration template rather
 than a working live Rally check. Validate clean, blocking, warning-only, and
 API-error cases with an approved test project before adopting it.

@@ -37,16 +37,17 @@ The CI workflow calls these paths in the application repository:
 The CD workflow calls these paths in the application repository:
 
 - `scripts/deploy.sh`
-- `scripts/integration-test.sh`
 - `scripts/regression-test.sh`
 - `scripts/smoke-test.sh`
 - `.zap/rules.tsv`
 
-On `personal-sp-test-rally-defects`, INT/QA replace the integration-test command
-with one external Rally defects composite-action call. The integration script
-remains in use for ePreProd. Regression tests remain separate in every stage.
+On `personal-sp-test-rally-defects`, INT/QA and ePreProd use the external Rally
+defects composite action through `defect_management` and
+`preprod_defect_management`. The obsolete `integration_test_command` input is
+removed; callers passing that input must remove it. Regression tests remain
+separate in every stage.
 See [Rally defects configuration](rally-defects.md) for the action-reference
-placeholder, caller settings, secret, and enforcement behavior. INT/QA are not
+placeholder, caller settings, secret, and enforcement behavior. These checks are not
 ready to run until the action reference and Rally configuration are supplied.
 
 The unit-test script must emit `reports/junit/results.xml` and
